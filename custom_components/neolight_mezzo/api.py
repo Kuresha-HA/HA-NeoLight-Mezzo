@@ -164,7 +164,9 @@ class NeoLightMobileApi:
             "os": "Android",
             "lang": "en",
             "appVersion": "1.1.0",
-            "ttid": self._profile["ttid"],
+            # Tuya mobile API expects a namespaced TTID, not the raw six-character
+            # SDK build flavor stored in THING_SMART_TTID.
+            "ttid": f"sdk_international@{self._profile['app_key']}",
             "et": "0.0.1",
             "channel": "oem",
             "platform": "Android",
