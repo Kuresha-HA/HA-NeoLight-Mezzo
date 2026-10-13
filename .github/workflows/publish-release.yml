@@ -69,13 +69,9 @@ jobs:
               if (releaseCheck) return;
             }
 
-            await github.rest.git.createRef({
-              owner,
-              repo,
-              ref: 'refs/tags/' + tag,
-              sha: context.sha
-            });
-
+            // Creating a release with a new tag also creates the tag. The
+            // repository's GitHub App token cannot create refs directly, so do
+            // not call git.createRef here.
             await github.rest.repos.createRelease({
               owner,
               repo,
