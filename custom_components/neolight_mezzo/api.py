@@ -1,11 +1,12 @@
-"""Tuya mobile API client used by NeoLight MEZZO.
+"""ThingClips mobile API client used by NeoLight MEZZO.
 
-The mobile API is not the public Tuya Cloud API. Its signing profile is loaded
-from a local JSON file and must never be committed to the repository.
+The request envelope is based on the ThingClips SDK protocol recovered from the
+NeoLight APK and cross-checked against independent SDK analysis. Signing material
+is local-only and must never be committed or logged.
 """
-
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import json
@@ -16,18 +17,26 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlencode
 
 from aiohttp import ClientError, ClientSession
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
 _LOGGER = logging.getLogger(__name__)
 PROFILE_PATH = Path(__file__).with_name("mobile_profile.json")
 ENDPOINT_EU = "https://a1.tuyaeu.com/api.json"
+APP_PACKAGE_NAME = "com.neolight.neo"
+APP_VERSION = "1.1.0"
+SDK_VERSION = "6.7.1"
+APP_RN_VERSION = "5.99"
 
-# Fields included by the documented/reverse-engineered mobile SDK signer.
+# Exact ThingClips mobile-sign whitelist. Only these non-empty fields contribute
+# to the canonical string. Other form fields are transport metadata, not signed.
 _SIGN_FIELDS = {
-    "a", "v", "lat", "lon", "lang", "deviceId", "imei", "imsi",
-    "appVersion", "ttid", "isH5", "h5Token", "os", "clientId",
-    "postData", "time", "requestId", "n4h5", "sid", "sp", "et",
+    "a", "v", "lat", "lon", "lang", "deviceId", "appVersion", "ttid",
+    "isH5", "h5Token", "os", "clientId", "postData", "time", "requestId",
+    "et", "n4h5", "sid", "chKey", "sp",
 }
 
 
@@ -43,42 +52,84 @@ class NeoLightProfileError(NeoLightApiError):
     """Local mobile signing profile is missing or invalid."""
 
 
+class NeoLightMFAError(NeoLightAuthError):
+    """The cloud requires an additional email verification step."""
+
+
 def load_profile() -> dict[str, str]:
     """Load app signing inputs from a local-only profile file."""
     if not PROFILE_PATH.is_file():
         raise NeoLightProfileError(
-            "Missing mobile_profile.json. Generate it locally from the official APK; "
-            "never commit this file or share it publicly."
+            "Missing mobile_profile.json. Regenerate it from the official APK; "
+            "never commit this file or share its contents publicly."
         )
     try:
         profile = json.loads(PROFILE_PATH.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as err:
         raise NeoLightProfileError("The local mobile profile is unreadable.") from err
 
-    required = ("app_key", "app_secret", "cert_sha256", "embedded_key", "ttid")
+    # Older profiles used an unverified 32-character embedded_key. The SDK's
+    # matrix decoder produces one 64-character hex bmp_token; reject old profiles
+    # instead of silently signing every request with invalid key material.
+    required = ("app_key", "app_secret", "cert_sha256", "bmp_token", "ttid")
     if any(not isinstance(profile.get(key), str) or not profile[key] for key in required):
-        raise NeoLightProfileError("The local mobile profile is incomplete.")
+        raise NeoLightProfileError(
+            "The mobile profile is outdated: it must contain bmp_token derived "
+            "from assets/t_s.bmp (64 hexadecimal characters)."
+        )
     if (
         len(profile["app_key"]) != 20
         or len(profile["app_secret"]) != 32
-        or len(profile["embedded_key"]) != 32
         or len(profile["cert_sha256"]) != 95
+        or len(profile["bmp_token"]) != 64
+        or not all(ch in string.hexdigits for ch in profile["bmp_token"])
     ):
-        raise NeoLightProfileError("The local mobile profile has invalid key lengths.")
-    profile["signing_key"] = "_".join(
-        (profile["cert_sha256"], profile["embedded_key"], profile["app_secret"])
-    )
+        raise NeoLightProfileError(
+            "The mobile profile has invalid key lengths or bmp_token format."
+        )
+    if len(profile["cert_sha256"].split(":")) != 32:
+        raise NeoLightProfileError("The APK certificate fingerprint is malformed.")
     return profile
 
 
 def _mobile_hash(value: str) -> str:
-    """Transform the MD5 hex digest as required by the Tuya mobile API."""
+    """Tuya postData digest: MD5 hex with the SDK's 8/8/8/8 block permutation."""
     digest = hashlib.md5(value.encode("utf-8")).hexdigest()
     return digest[8:16] + digest[0:8] + digest[24:32] + digest[16:24]
 
 
-def _signature(params: dict[str, Any], signing_key: str) -> str:
-    """Create the mobile-app HMAC-SHA256 signature."""
+def _cert_colon_upper(profile: dict[str, str]) -> str:
+    """Return the APK SHA-256 as 95-character colon-separated uppercase hex."""
+    raw = profile["cert_sha256"].replace(":", "").strip()
+    if len(raw) != 64 or any(ch not in string.hexdigits for ch in raw):
+        raise NeoLightProfileError("The APK certificate fingerprint is malformed.")
+    return ":".join(raw[i:i + 2] for i in range(0, 64, 2)).upper()
+
+
+def _master_key_g(profile: dict[str, str]) -> bytes:
+    """Assemble the SDK's master key G from package, cert, decoded BMP token, secret."""
+    try:
+        matrix_key = bytes.fromhex(profile["bmp_token"])
+    except ValueError as err:
+        raise NeoLightProfileError("The BMP token must be 64 hexadecimal characters.") from err
+    return b"_".join((
+        APP_PACKAGE_NAME.encode("utf-8"),
+        _cert_colon_upper(profile).encode("ascii"),
+        matrix_key,
+        profile["app_secret"].encode("utf-8"),
+    ))
+
+
+def _ch_key(profile: dict[str, str]) -> str:
+    """Calculate the 8-hex-character client-binding value required by ThingClips."""
+    message = f"{APP_PACKAGE_NAME}_{_cert_colon_upper(profile)}".encode("utf-8")
+    digest = hmac.new(profile["app_key"].encode("utf-8"), message, hashlib.sha256).hexdigest()
+    # The native getChKey implementation returns hex[8:16], exactly 8 characters.
+    return digest[8:16]
+
+
+def _signature(params: dict[str, Any], signing_key: bytes | str) -> str:
+    """Create the SDK request signature: HMAC-SHA256(master-key G, canonical params)."""
     segments: list[str] = []
     for key in sorted(params):
         value = params[key]
@@ -88,33 +139,73 @@ def _signature(params: dict[str, Any], signing_key: str) -> str:
             value = _mobile_hash(str(value))
         segments.append(f"{key}={value}")
     canonical = "||".join(segments)
-    return hmac.new(
-        signing_key.encode("utf-8"), canonical.encode("utf-8"), hashlib.sha256
-    ).hexdigest()
+    key_bytes = signing_key.encode("utf-8") if isinstance(signing_key, str) else signing_key
+    return hmac.new(key_bytes, canonical.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def _et3_key(request_id: str, master_key: bytes, ecode: str | None = None) -> bytes:
+    """Derive the 16-byte ASCII-hex AES-GCM key used for ET=3 payloads."""
+    message = master_key
+    if ecode:
+        message += b"_" + ecode.encode("utf-8")
+    digest_hex = hmac.new(request_id.encode("utf-8"), message, hashlib.sha256).hexdigest()
+    return digest_hex[:16].encode("ascii")
+
+
+def _encrypt_post_data(
+    post_data: str, request_id: str, master_key: bytes, ecode: str | None = None
+) -> str:
+    """AES-128-GCM encrypt postData; wire value is base64(nonce || ciphertext || tag)."""
+    nonce = secrets.token_bytes(12)
+    cipher_text_and_tag = AESGCM(_et3_key(request_id, master_key, ecode)).encrypt(
+        nonce, post_data.encode("utf-8"), None
+    )
+    return base64.b64encode(nonce + cipher_text_and_tag).decode("ascii")
+
+
+def _decrypt_et3_result(
+    result: str, request_id: str, master_key: bytes, ecode: str | None = None
+) -> dict[str, Any]:
+    """Decrypt the accepted ET=3 response envelope without logging plaintext."""
+    try:
+        raw = base64.b64decode(result, validate=True)
+        if len(raw) < 28:
+            raise ValueError("response too short")
+        plain = AESGCM(_et3_key(request_id, master_key, ecode)).decrypt(
+            raw[:12], raw[12:], None
+        )
+        data = json.loads(plain.decode("utf-8"))
+    except Exception as err:
+        raise NeoLightApiError("Could not decode the encrypted NeoLight cloud response.") from err
+    if not isinstance(data, dict):
+        raise NeoLightApiError("Unexpected decrypted cloud response.")
+    return data
+
+
+def _rewrite_action(action: str) -> str:
+    """ThingClips rewrites the leading 'thing' namespace to 'smartlife' on wire."""
+    return "smartlife" + action[5:] if action.startswith("thing") else action
 
 
 def _random_device_id(length: int = 44) -> str:
-    """Generate an app-style client device identifier."""
-    alphabet = string.ascii_lowercase + string.digits
-    return "".join(secrets.choice(alphabet) for _ in range(length))
+    """Generate a stable-for-this-config-flow, app-shaped lowercase hex device ID."""
+    return secrets.token_hex(length // 2)
 
 
 def _encrypt_password(password: str, public_key: str, exponent: str) -> str:
-    """Encrypt MD5(password) with Tuya's ephemeral textbook-RSA public key."""
-    message = hashlib.md5(password.encode("utf-8")).hexdigest().encode("ascii")
-    modulus = int(public_key)
-    exp = int(exponent)
-    width = (modulus.bit_length() + 7) // 8
-    value = int.from_bytes(message, "big")
-    if value >= modulus:
-        raise NeoLightAuthError("The server returned an invalid RSA public key.")
-    encrypted = pow(value, exp, modulus).to_bytes(width, "big").hex()
-    # Tuya's legacy enhanced-login protocol expects a 64-zero prefix.
-    return "0" * 64 + encrypted
+    """RSA/PKCS#1 v1.5 encrypt the lowercase MD5 hex of the password."""
+    try:
+        modulus = int(public_key)
+        exp = int(exponent or "65537")
+        key = rsa.RSAPublicNumbers(exp, modulus).public_key()
+        digest = hashlib.md5(password.encode("utf-8")).hexdigest().encode("ascii")
+        return key.encrypt(digest, padding.PKCS1v15()).hex()
+    except Exception as err:
+        raise NeoLightAuthError("The cloud returned an invalid RSA login key.") from err
 
 
 class NeoLightMobileApi:
-    """Small async client for the Tuya mobile API used by the NeoLight app."""
+    """Async client for the NeoLight app's ThingClips mobile-cloud API."""
 
     def __init__(
         self,
@@ -132,7 +223,10 @@ class NeoLightMobileApi:
         self._profile = profile
         self._endpoint = endpoint
         self._sid: str | None = None
+        self._ecode: str | None = None
         self._device_id = _random_device_id()
+        self._master_key = _master_key_g(profile)
+        self._ch_key = _ch_key(profile)
 
     async def _request(
         self,
@@ -142,39 +236,39 @@ class NeoLightMobileApi:
         version: str = "1.0",
         requires_sid: bool = True,
         extra_params: dict[str, Any] | None = None,
+        ecode: str | None = None,
     ) -> dict[str, Any] | list[Any]:
-        """Send one signed request without logging secrets or response payloads."""
-        if requires_sid is False:
-            sid = None
-        else:
-            sid = self._sid
-            if not sid:
-                raise NeoLightAuthError("No authenticated mobile API session.")
+        """Send one app-faithful, signed ET=3 request with no query-string secrets."""
+        sid = self._sid if requires_sid else None
+        if requires_sid and not sid:
+            raise NeoLightAuthError("No authenticated mobile API session.")
 
-        body = (
-            json.dumps(post_data, separators=(",", ":"), ensure_ascii=False)
-            if post_data is not None
-            else None
-        )
+        request_id = str(uuid.uuid4())
         params: dict[str, Any] = {
-            "a": action,
+            "a": _rewrite_action(action),
             "v": version,
             "clientId": self._profile["app_key"],
             "deviceId": self._device_id,
             "os": "Android",
             "lang": "en",
-            "appVersion": "1.1.0",
-            # Tuya mobile API expects a namespaced TTID, not the raw six-character
-            # SDK build flavor stored in THING_SMART_TTID.
+            "appVersion": APP_VERSION,
             "ttid": f"sdk_international@{self._profile['app_key']}",
-            "et": "0.0.1",
+            "et": "3",
             "channel": "oem",
             "platform": "Android",
-            "appRnVersion": "5.14",
+            "appRnVersion": APP_RN_VERSION,
             "osSystem": "9",
             "timeZoneId": "Europe/Kyiv",
-            "sdkVersion": "3.10.0",
-            "requestId": str(uuid.uuid4()),
+            "sdkVersion": SDK_VERSION,
+            "deviceCoreVersion": SDK_VERSION,
+            "cp": "gzip",
+            "nd": "1",
+            "bizData": json.dumps(
+                {"customDomainSupport": "1", "nd": "1", "sdkInt": "28", "brand": "Android"},
+                separators=(",", ":"),
+            ),
+            "chKey": self._ch_key,
+            "requestId": request_id,
             "time": str(int(time.time())),
         }
         if sid:
@@ -182,49 +276,82 @@ class NeoLightMobileApi:
         if extra_params:
             params.update(extra_params)
 
-        # In the known Tuya mobile API implementation, postData is sent in the
-        # form body, but is included in the signing input. Do not also put it
-        # into the URL query parameters.
+        wire_post_data: str | None = None
+        if post_data is not None:
+            raw_body = json.dumps(post_data, separators=(",", ":"), ensure_ascii=False)
+            wire_post_data = _encrypt_post_data(
+                raw_body, request_id, self._master_key, ecode if ecode is not None else (self._ecode if requires_sid else None)
+            )
         signing_params = dict(params)
-        if body is not None:
-            signing_params["postData"] = body
-        params["sign"] = _signature(signing_params, self._profile["signing_key"])
-        form = {"postData": body} if body is not None else None
+        if wire_post_data is not None:
+            signing_params["postData"] = wire_post_data
+        params["sign"] = _signature(signing_params, self._master_key)
 
+        # ThingClips sends all envelope fields as form data, not URL query params.
+        form = {key: str(value) for key, value in params.items()}
+        if wire_post_data is not None:
+            form["postData"] = wire_post_data
         try:
             async with self._session.post(
                 self._endpoint,
-                params=params,
-                data=form,
+                data=urlencode(form),
+                headers={
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "x-client-trace-id": request_id,
+                },
                 timeout=20,
             ) as response:
                 if response.status >= 500:
-                    raise NeoLightApiError(f"Tuya mobile API returned HTTP {response.status}.")
+                    raise NeoLightApiError(f"NeoLight cloud returned HTTP {response.status}.")
                 try:
                     payload = await response.json(content_type=None)
                 except (ValueError, json.JSONDecodeError) as err:
-                    raise NeoLightApiError("Tuya mobile API returned a non-JSON response.") from err
+                    raise NeoLightApiError("NeoLight cloud returned a non-JSON response.") from err
         except (ClientError, TimeoutError) as err:
             raise NeoLightApiError("Could not connect to the NeoLight cloud endpoint.") from err
 
         if not isinstance(payload, dict):
             raise NeoLightApiError("Unexpected response from the NeoLight cloud endpoint.")
-        if payload.get("success") is not True:
+
+        # Gateway-level rejects are plaintext and happen before ET=3 response
+        # encryption. Preserve the actual code while never logging request material.
+        if payload.get("success") is False:
             code = str(payload.get("errorCode", "UNKNOWN"))
             message = str(payload.get("errorMsg", "Cloud request failed"))
             if code in {"USER_PASSWD_WRONG", "USER_NOT_EXIST", "USER_ACCOUNT_NOT_EXIST"}:
                 raise NeoLightAuthError("The account identifier or password was rejected.")
+            if code == "MFA_NEED_SEND_CODE":
+                raise NeoLightMFAError("NeoLight cloud requires an email verification code.")
             raise NeoLightApiError(f"Cloud request failed ({code}): {message}")
+
+        if "success" not in payload and isinstance(payload.get("result"), str):
+            payload = _decrypt_et3_result(
+                payload["result"],
+                request_id,
+                self._master_key,
+                ecode if ecode is not None else (self._ecode if requires_sid else None),
+            )
+        if payload.get("success") is not True:
+            code = str(payload.get("errorCode", "UNKNOWN"))
+            if code == "MFA_NEED_SEND_CODE":
+                raise NeoLightMFAError("NeoLight cloud requires an email verification code.")
+            raise NeoLightApiError(f"Cloud request failed ({code}).")
+
         result = payload.get("result")
         if not isinstance(result, (dict, list)):
             raise NeoLightApiError("Cloud response did not contain a result object.")
         return result
 
     async def login_email(self) -> None:
-        """Perform Tuya's enhanced email/password login sequence."""
+        """Authenticate with the NeoLight account using the ThingClips ticket flow."""
         token_result = await self._request(
-            "tuya.m.user.email.token.create",
-            {"countryCode": self._country_code, "email": self._username},
+            "thing.m.user.username.token.get",
+            {
+                "countryCode": self._country_code,
+                "username": self._username,
+                "isUid": False,
+            },
+            version="2.0",
             requires_sid=False,
         )
         if not isinstance(token_result, dict):
@@ -233,27 +360,30 @@ class NeoLightMobileApi:
             encrypted_password = _encrypt_password(
                 self._password,
                 str(token_result["publicKey"]),
-                str(token_result["exponent"]),
+                str(token_result.get("exponent", "65537")),
             )
             token = str(token_result["token"])
         except (KeyError, ValueError, TypeError) as err:
-            raise NeoLightAuthError("Cloud login token response is incomplete.") from err
+            raise NeoLightAuthError("Cloud login-token response is incomplete.") from err
 
         login_result = await self._request(
-            "tuya.m.user.email.password.login",
+            "thing.m.user.email.password.login",
             {
                 "countryCode": self._country_code,
                 "email": self._username,
                 "passwd": encrypted_password,
                 "ifencrypt": 1,
-                "options": '{"group": 1}',
+                "options": '{"group": 1,"mfaCode": ""}',
                 "token": token,
             },
+            version="3.0",
             requires_sid=False,
         )
         if not isinstance(login_result, dict) or not login_result.get("sid"):
             raise NeoLightAuthError("Cloud login did not return a session.")
         self._sid = str(login_result["sid"])
+        if login_result.get("ecode"):
+            self._ecode = str(login_result["ecode"])
         domain = login_result.get("domain")
         if isinstance(domain, dict) and domain.get("mobileApiUrl"):
             host = str(domain["mobileApiUrl"]).rstrip("/")
@@ -261,14 +391,15 @@ class NeoLightMobileApi:
                 self._endpoint = host if host.endswith("/api.json") else host + "/api.json"
 
     async def login_phone(self) -> None:
-        """Attempt the analogous enhanced phone/password mobile login flow.
-
-        The method is exposed by the bundled SDK, but these legacy API action
-        names have not yet been confirmed from a live NeoLight login.
-        """
+        """Attempt the mobile-number login variant of the ThingClips ticket flow."""
         token_result = await self._request(
-            "tuya.m.user.phone.token.create",
-            {"countryCode": self._country_code, "phone": self._username},
+            "thing.m.user.username.token.get",
+            {
+                "countryCode": self._country_code,
+                "username": self._username,
+                "isUid": False,
+            },
+            version="2.0",
             requires_sid=False,
         )
         if not isinstance(token_result, dict):
@@ -277,76 +408,57 @@ class NeoLightMobileApi:
             encrypted_password = _encrypt_password(
                 self._password,
                 str(token_result["publicKey"]),
-                str(token_result["exponent"]),
+                str(token_result.get("exponent", "65537")),
             )
             token = str(token_result["token"])
         except (KeyError, ValueError, TypeError) as err:
             raise NeoLightAuthError("Phone login-token response is incomplete.") from err
 
         login_result = await self._request(
-            "tuya.m.user.phone.password.login",
+            "thing.m.user.mobile.passwd.login",
             {
                 "countryCode": self._country_code,
-                "phone": self._username,
+                "mobile": self._username,
                 "passwd": encrypted_password,
                 "ifencrypt": 1,
-                "options": '{"group": 1}',
+                "options": '{"group": 1,"mfaCode": ""}',
                 "token": token,
             },
+            version="3.0",
             requires_sid=False,
         )
         if not isinstance(login_result, dict) or not login_result.get("sid"):
             raise NeoLightAuthError("Phone login did not return a session.")
         self._sid = str(login_result["sid"])
-        domain = login_result.get("domain")
-        if isinstance(domain, dict) and domain.get("mobileApiUrl"):
-            host = str(domain["mobileApiUrl"]).rstrip("/")
-            if host.startswith("https://"):
-                self._endpoint = host if host.endswith("/api.json") else host + "/api.json"
+        if login_result.get("ecode"):
+            self._ecode = str(login_result["ecode"])
 
     async def get_homes(self) -> list[Any]:
-        """Return locations/homes visible to the signed-in account."""
-        result = await self._request("tuya.m.location.list")
+        """Return homes/groups visible to the signed-in NeoLight account."""
+        result = await self._request(
+            "m.life.home.space.list",
+            version="1.0",
+            ecode=self._ecode,
+        )
         if not isinstance(result, list):
             raise NeoLightApiError("Unexpected home-list response.")
         return result
 
     async def get_devices(self, home_id: str) -> list[Any]:
-        """Return device list for one home, enriched with each device's details."""
+        """Return device-list records for one account home/group."""
+        try:
+            gid: Any = int(home_id)
+        except (TypeError, ValueError):
+            gid = home_id
         result = await self._request(
-            "tuya.m.my.group.device.list",
-            version="1.0",
-            extra_params={"gid": home_id},
+            "m.life.my.group.device.list",
+            {"gid": gid},
+            version="2.2",
+            ecode=self._ecode,
         )
         if not isinstance(result, list):
             raise NeoLightApiError("Unexpected device-list response.")
-
-        devices: list[Any] = []
-        for item in result:
-            if not isinstance(item, dict):
-                devices.append(item)
-                continue
-            dev_id = item.get("devId") or item.get("id")
-            if not dev_id:
-                devices.append(item)
-                continue
-            try:
-                details = await self._request(
-                    "tuya.m.device.get",
-                    {"devId": str(dev_id)},
-                )
-            except NeoLightApiError:
-                # Some devices may be shared or lack detail permissions.
-                # Keep their list entry instead of failing discovery entirely.
-                devices.append(item)
-                continue
-            if isinstance(details, dict):
-                # Keep the detail payload authoritative while preserving list
-                # fields absent from the details response.
-                devices.append({**item, **details})
-            else:
-                devices.append(item)
-        return devices
+        return result
 
     @property
     def session_id(self) -> str | None:
