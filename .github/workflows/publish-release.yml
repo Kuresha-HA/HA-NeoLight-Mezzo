@@ -1,3 +1,4 @@
+# Publishes the current manifest version as a stable HACS release.
 name: Publish HACS release
 
 on:
