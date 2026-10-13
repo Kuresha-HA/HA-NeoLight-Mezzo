@@ -42,7 +42,35 @@ class NeoLightConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     profile,
                 )
                 await client.login_email()
-                homes = await client.get_homes()
+                homes_raw = await client.get_homes()
+                homes = []
+                devices = []
+                for home in homes_raw:
+                    if not isinstance(home, dict):
+                        continue
+                    home_id = home.get("groupId") or home.get("gid") or home.get("homeId")
+                    homes.append({
+                        "id": str(home_id) if home_id is not None else "",
+                        "name": str(home.get("name") or home.get("groupName") or "NeoLight home"),
+                    })
+                    if home_id is not None:
+                        try:
+                            home_devices = await client.get_devices(str(home_id))
+                        except NeoLightApiError:
+                            _LOGGER.warning("Could not enumerate devices for a discovered home.")
+                            continue
+                        for device in home_devices:
+                            if not isinstance(device, dict):
+                                continue
+                            # Keep only discovery metadata; never persist local keys or cloud tokens.
+                            devices.append({
+                                "id": str(device.get("devId") or device.get("id") or ""),
+                                "name": str(device.get("name") or "NeoLight device"),
+                                "online": bool(device.get("isOnline", False)),
+                                "product_id": str(device.get("productId") or ""),
+                                "category": str(device.get("category") or ""),
+                                "home_id": str(home_id),
+                            })
                 await self.async_set_unique_id(username.casefold())
                 self._abort_if_unique_id_configured()
                 return self.async_create_entry(
@@ -52,6 +80,7 @@ class NeoLightConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         CONF_PASSWORD: user_input[CONF_PASSWORD],
                         CONF_COUNTRY_CODE: user_input[CONF_COUNTRY_CODE],
                         "homes": homes,
+                        "devices": devices,
                     },
                 )
             except NeoLightProfileError:
