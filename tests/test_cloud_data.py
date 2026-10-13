@@ -69,5 +69,34 @@ def test_normalize_snapshot_reflects_changed_online_state():
     assert offline["devices"][0]["online"] is False
 
 
+def test_normalize_snapshot_parses_string_boolean_values():
+    true_values = ["true", "TRUE", "yes", "1", 1, True]
+    false_values = ["false", "FALSE", "no", "0", 0, False, None, ""]
+
+    for value in true_values:
+        snapshot = normalize_snapshot(
+            [{"gid": "1"}], {"1": [{"id": "device", "isOnline": value}]}
+        )
+        assert snapshot["devices"][0]["online"] is True
+
+    for value in false_values:
+        snapshot = normalize_snapshot(
+            [{"gid": "1"}], {"1": [{"id": "device", "isOnline": value}]}
+        )
+        assert snapshot["devices"][0]["online"] is False
+
+
+def test_normalize_snapshot_deduplicates_devices_across_homes():
+    snapshot = normalize_snapshot(
+        [{"gid": "1"}, {"gid": "2"}],
+        {
+            "1": [{"id": "device", "name": "First", "isOnline": True}],
+            "2": [{"id": "device", "name": "Duplicate", "isOnline": False}],
+        },
+    )
+    assert len(snapshot["devices"]) == 1
+    assert snapshot["devices"][0]["name"] == "First"
+
+
 def test_normalize_snapshot_accepts_empty_cloud_response():
     assert normalize_snapshot([], {}) == {"homes": [], "devices": []}
