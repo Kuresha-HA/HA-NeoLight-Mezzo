@@ -30,7 +30,8 @@ jobs:
             const fs = require('fs');
             const manifest = JSON.parse(fs.readFileSync('custom_components/neolight_mezzo/manifest.json', 'utf8'));
             const version = manifest.version;
-            if (!version || !/^\\d+\\.\\d+\\.\\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(version)) {
+            const versionParts = String(version || '').split('.');
+            if (versionParts.length !== 3 || versionParts.some(part => !part || [...part].some(char => char < '0' || char > '9'))) {
               core.setFailed('manifest.json must contain a valid semantic version.');
               return;
             }
