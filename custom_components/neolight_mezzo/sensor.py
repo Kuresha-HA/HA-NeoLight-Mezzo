@@ -8,10 +8,12 @@ from typing import Any
 from homeassistant.components.sensor import SensorEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
+from . import NeoLightCloudCoordinator
 from .const import DOMAIN
 
 
@@ -20,24 +22,29 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Create sensors from the sanitized device snapshot saved during setup."""
-    devices: list[dict[str, Any]] = entry.data.get("devices", [])
+    """Create coordinator-backed sensors for the current cloud device snapshot."""
+    coordinator: NeoLightCloudCoordinator = hass.data[DOMAIN][entry.entry_id]
+    devices: list[dict[str, Any]] = coordinator.data.get("devices", [])
     async_add_entities(
-        [NeoLightDeviceCountSensor(entry, devices)]
-        + [NeoLightDeviceOnlineSensor(entry, device) for device in devices if device.get("id")]
+        [NeoLightDeviceCountSensor(coordinator, entry)]
+        + [
+            NeoLightDeviceOnlineSensor(coordinator, entry, device)
+            for device in devices
+            if device.get("id")
+        ]
     )
 
 
-class NeoLightDeviceCountSensor(SensorEntity):
-    """Count devices discovered in the account during config flow."""
+class NeoLightDeviceCountSensor(CoordinatorEntity[NeoLightCloudCoordinator], SensorEntity):
+    """Count devices currently discovered in the cloud account."""
 
     _attr_has_entity_name = True
     _attr_entity_category = EntityCategory.DIAGNOSTIC
     _attr_name = "Discovered devices"
     _attr_icon = "mdi:devices"
 
-    def __init__(self, entry: ConfigEntry, devices: list[dict[str, Any]]) -> None:
-        self._devices = devices
+    def __init__(self, coordinator: NeoLightCloudCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator)
         self._attr_unique_id = f"{entry.entry_id}_device_count"
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, entry.entry_id)},
@@ -48,25 +55,32 @@ class NeoLightDeviceCountSensor(SensorEntity):
 
     @property
     def native_value(self) -> int:
-        """Return the number of discovered devices."""
-        return len(self._devices)
+        """Return the latest number of discovered devices."""
+        return len(self.coordinator.data.get("devices", []))
 
 
-class NeoLightDeviceOnlineSensor(SensorEntity):
-    """Online-state snapshot for one discovered device."""
+class NeoLightDeviceOnlineSensor(
+    CoordinatorEntity[NeoLightCloudCoordinator], SensorEntity
+):
+    """Current online state for one discovered device."""
 
     _attr_has_entity_name = True
     _attr_entity_category = EntityCategory.DIAGNOSTIC
     _attr_icon = "mdi:lan-connect"
 
-    def __init__(self, entry: ConfigEntry, device: dict[str, Any]) -> None:
-        self._device = device
-        dev_id = str(device["id"])
-        slug = re.sub(r"[^a-zA-Z0-9_]+", "_", dev_id)
+    def __init__(
+        self,
+        coordinator: NeoLightCloudCoordinator,
+        entry: ConfigEntry,
+        device: dict[str, Any],
+    ) -> None:
+        super().__init__(coordinator)
+        self._device_id = str(device["id"])
+        slug = re.sub(r"[^a-zA-Z0-9_]+", "_", self._device_id)
         self._attr_unique_id = f"{entry.entry_id}_{slug}_online"
         self._attr_name = f"{device.get('name') or 'Device'} online"
         self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, dev_id)},
+            identifiers={(DOMAIN, self._device_id)},
             name=str(device.get("name") or "NeoLight device"),
             manufacturer="NeoLight",
             model=str(device.get("product_id") or "Tuya-connected device"),
@@ -80,5 +94,8 @@ class NeoLightDeviceOnlineSensor(SensorEntity):
 
     @property
     def native_value(self) -> str:
-        """Return the online state captured during setup."""
-        return "online" if self._device.get("online") else "offline"
+        """Return the latest online state, not the initial config-flow snapshot."""
+        for device in self.coordinator.data.get("devices", []):
+            if str(device.get("id")) == self._device_id:
+                return "online" if device.get("online") else "offline"
+        return "unknown"
