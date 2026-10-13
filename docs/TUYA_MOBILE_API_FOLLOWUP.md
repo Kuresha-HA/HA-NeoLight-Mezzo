@@ -37,3 +37,12 @@ Reviewed https://github.com/nihatds100/DoorbellTuya. Its authentication uses the
 The DoorbellTuya code is licensed PolyForm Noncommercial 1.0.0 (its separately retained third-party bridge sources have their own licenses). Its camera pipeline is a Go WebRTC-to-RTSP bridge and is not directly reusable as a native Python mobile-SDK integration.
 
 The active investigation remains the NeoLight APK's own ThingClips SDK, its mobile API request signature/metadata, the `ILLEGAL_CLIENT_ID` response, and the correct NeoLight account/device discovery flow. Do not test Smart Life endpoints or send any remote-unlock command.
+
+
+## ThingClips envelope correction (2026-10-13)
+
+The previous `ILLEGAL_CLIENT_ID` request was not faithful to the app's SDK envelope. Independent ThingClips reverse-engineering in `eisbaw/babymonitor-client` documents a signed `chKey` field calculated as the first eight hex characters at offsets 8..16 of HMAC-SHA256(appKey, packageName + "_" + uppercase colon-separated certificate SHA-256). The previous NeoLight client omitted `chKey` entirely. The same protocol reference shows `et=3`, AES-GCM-encrypted `postData`, all envelope fields in an application/x-www-form-urlencoded POST body (not URL query parameters), and a master key assembled from package name, certificate fingerprint, decoded BMP token bytes, and appSecret.
+
+NeoLight APK static analysis in the local workspace confirmed that the supplied `embedded_key` profile field (32 non-hex characters) does NOT match the expected decoded BMP token format. The SDK's `assets/t_s.bmp` decoder was ported locally against the user-supplied APK and appKey; the matrix solve passed the integral-result check and produced a single 64-character hexadecimal candidate. The value is deliberately not recorded here or committed. The new `tools/derive_mobile_profile.py` helper reproduces that derivation on the owner's computer and writes the corrected token into a private profile file.
+
+The implementation now uses the SDK master-key layout, `chKey`, ET=3 AES-GCM encryption/decryption, RSA PKCS#1 v1.5 encryption of the password's MD5 hex, and the ThingClips login/home/device-list action names. This is a protocol-level correction, not yet a live-authentication success claim. The next required validation is a single read-only `token.get`/login flow using a regenerated local profile; never run any unlock/control action during auth testing.
