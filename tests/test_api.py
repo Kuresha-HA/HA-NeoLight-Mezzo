@@ -1,8 +1,27 @@
-"""Unit tests for the Tuya mobile API signer."""
+"""Unit tests for the Tuya mobile API signer.
+
+Load api.py directly so collecting these unit tests does not import the
+Home Assistant integration package (Home Assistant is not installed in CI).
+"""
 
 import hashlib
+import importlib.util
+from pathlib import Path
 
-from custom_components.neolight_mezzo.api import _encrypt_password, _mobile_hash, _signature
+_API_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "custom_components"
+    / "neolight_mezzo"
+    / "api.py"
+)
+_SPEC = importlib.util.spec_from_file_location("neolight_mezzo_api_under_test", _API_PATH)
+assert _SPEC is not None and _SPEC.loader is not None
+_API = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(_API)
+
+_encrypt_password = _API._encrypt_password
+_mobile_hash = _API._mobile_hash
+_signature = _API._signature
 
 
 def test_mobile_hash_uses_expected_digest_permutation():
