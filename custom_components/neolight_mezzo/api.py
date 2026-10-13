@@ -342,7 +342,7 @@ class NeoLightMobileApi:
             raise NeoLightApiError("Cloud response did not contain a result object.")
         return result
 
-    async def login_email(self) -> None:
+    async def login_email(self, mfa_code: str = "") -> None:
         """Authenticate with the NeoLight account using the ThingClips ticket flow."""
         token_result = await self._request(
             "thing.m.user.username.token.get",
@@ -373,7 +373,7 @@ class NeoLightMobileApi:
                 "email": self._username,
                 "passwd": encrypted_password,
                 "ifencrypt": 1,
-                "options": '{"group": 1,"mfaCode": ""}',
+                "options": json.dumps({"group": 1, "mfaCode": mfa_code}, separators=(",", ":")),
                 "token": token,
             },
             version="3.0",
@@ -390,7 +390,7 @@ class NeoLightMobileApi:
             if host.startswith("https://"):
                 self._endpoint = host if host.endswith("/api.json") else host + "/api.json"
 
-    async def login_phone(self) -> None:
+    async def login_phone(self, mfa_code: str = "") -> None:
         """Attempt the mobile-number login variant of the ThingClips ticket flow."""
         token_result = await self._request(
             "thing.m.user.username.token.get",
@@ -421,7 +421,7 @@ class NeoLightMobileApi:
                 "mobile": self._username,
                 "passwd": encrypted_password,
                 "ifencrypt": 1,
-                "options": '{"group": 1,"mfaCode": ""}',
+                "options": json.dumps({"group": 1, "mfaCode": mfa_code}, separators=(",", ":")),
                 "token": token,
             },
             version="3.0",
