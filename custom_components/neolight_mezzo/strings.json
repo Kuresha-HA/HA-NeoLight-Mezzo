@@ -1,0 +1,7 @@
+{
+  "config": {
+    "abort": {
+      "cloud_auth_not_implemented": "NeoLight cloud authentication is still being researched. No credentials were collected."
+    }
+  }
+}
