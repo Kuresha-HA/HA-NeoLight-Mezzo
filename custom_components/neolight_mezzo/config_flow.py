@@ -11,6 +11,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from .api import (
     NeoLightApiError,
     NeoLightAuthError,
+    NeoLightMFAError,
     NeoLightMobileApi,
     NeoLightProfileError,
     load_profile,
@@ -88,6 +89,8 @@ class NeoLightConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 )
             except NeoLightProfileError:
                 errors["base"] = "profile_missing"
+            except NeoLightMFAError:
+                errors["base"] = "mfa_required"
             except NeoLightAuthError:
                 errors["base"] = "invalid_auth"
             except NeoLightApiError as err:
