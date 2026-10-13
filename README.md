@@ -2,11 +2,11 @@
 
 Custom Home Assistant integration research for the NeoLight MEZZO HD WF video intercom.
 
-## Current status — experimental 0.3.3
+## Current status — experimental 0.3.6
 
 The official NeoLight 1.1.0 APK uses a ThingSmart/ThingClips-derived mobile cloud API. The repository now contains an initial implementation of the mobile request signer, enhanced email/password login, and discovery of homes/devices.
 
-**This has not yet been live-validated against the NeoLight account.** The email/password login uses a documented/reverse-engineered Tuya mobile flow. Phone/password login is included using inferred legacy action names and may need adjustment. The effective API host and app-specific request parameters also require a live test.
+**The corrected request format has not yet been live-validated against the NeoLight account.** The last cloud response was `ILLEGAL_CLIENT_ID`; static analysis found that the previous implementation omitted `chKey`, used the wrong postData transport/encryption, and used an unverified embedded key. Version 0.3.6 corrects those protocol details, but only a live login can confirm cloud acceptance. The account may also require an email MFA challenge, which the current config flow reports but does not yet complete.
 
 ### Local signing profile required
 
@@ -17,21 +17,28 @@ The app's signing material is extracted from the official APK and must be suppli
 Required fields:
 - `app_key`
 - `app_secret`
-- `cert_sha256`
-- `embedded_key`
-- `ttid`
+- `cert_sha256` (colon-separated SHA-256 fingerprint of the APK signing certificate)
+- `bmp_token` (64-character hex token derived from `assets/t_s.bmp`)
+- `ttid` (raw six-character SDK flavor; retained as metadata)
 
-Do not commit this file, publish its contents, or include it in issue reports. The integration assembles the signing key in memory. A profile generated for the exact NeoLight APK is provided separately to the project owner; it is intentionally excluded from GitHub.
+The previous `embedded_key` profile format was based on an unverified extraction and is no longer accepted. The current integration computes the ThingClips `chKey` and ET=3 request signature from the correct master-key layout. Regenerate the local profile from the official APK with `tools/derive_mobile_profile.py`; it reads the existing profile and writes a corrected one without printing any key material. Example:
+
+```bash
+python tools/derive_mobile_profile.py com.neolight.neo.apk mobile_profile.json mobile_profile.fixed.json
+```
+
+Copy the corrected output to `custom_components/neolight_mezzo/mobile_profile.json` on the Home Assistant installation. Keep it private: never commit it, publish its contents, or include it in issue reports.
 
 ## Implemented in this research version
 
-- Mobile API HMAC-SHA256 request signing with transformed MD5 body digest.
-- Enhanced email login using a one-time RSA public key.
-- Experimental phone login path using analogous but not yet confirmed action names.
+- ThingClips `chKey` generation (8-character HMAC-derived client-binding value).
+- ET=3 AES-GCM request-body encryption and HMAC-SHA256 request signing using the SDK master-key layout.
+- Enhanced email login using the SDK ticket flow and RSA/PKCS#1 v1.5 password encryption.
+- Experimental phone login path; its exact NeoLight account behavior remains unverified.
 - EU endpoint default (`a1.tuyaeu.com`) with support for the endpoint returned by login.
-- Home/location enumeration and device-list requests, enriched with per-device detail lookups.
-- App-specific TTID is now taken from the locally extracted mobile profile rather than a generic guessed value.
-- Unit test covering request-body signing and device-detail enrichment.
+- Home/group and device-list discovery actions based on the ThingClips mobile API.
+- The wire TTID uses the SDK's `sdk_international@<app_key>` format and the wire channel is `oem`.
+- Offline tests for `chKey`, master-key assembly, ET=3 encryption, RSA password encryption, and request formatting.
 - Diagnostic sensors that snapshot discovered device count and online state at setup.
 - Passwords are entered only in Home Assistant config flow; API payloads and credentials are not logged.
 
