@@ -28,3 +28,12 @@ These are source-level SDK findings from a separate public decompilation and mus
 ## Authentication status
 
 The mobile-app signature derivation is now understood well enough to implement in isolation, but no authenticated request has yet been validated against the user's NeoLight account. The remaining unknowns are the exact login path for the account's login identifier (email vs phone), its enhanced-login action/payload, and the effective endpoint/parameters returned by the SDK. The official app's API traffic remains encrypted in the existing PCAP capture.
+
+
+## DoorbellTuya comparison (2026-10-13)
+
+Reviewed https://github.com/nihatds100/DoorbellTuya. Its authentication does not use the signed mobile endpoint `https://a1.tuyaeu.com/api.json`; it uses the Smart Life web-account endpoint family on regional `protect-*.ismartlife.me` hosts. The observed sequence is POST `/api/login/token` with `countryCode`, `username`, `isUid:false`; encrypt MD5(password) using the returned RSA public key; then POST `/api/private/email/login` or `/api/private/phone/login` with token and enhanced-login options. After successful login, the code maintains a cookie jar and enumerates home/room devices via `/api/new/common/homeList` and `/api/new/common/roomList`.
+
+This is a useful alternative hypothesis for the current `ILLEGAL_CLIENT_ID` result, but it is **not confirmed compatible** with NeoLight accounts or MEZZO devices. The DoorbellTuya code is licensed PolyForm Noncommercial 1.0.0 (its separately retained third-party bridge sources use their own licenses); do not copy its source into this repository without checking licensing and attribution. Its camera pipeline is a Go WebRTC-to-RTSP bridge and is not directly reusable as a native Python mobile-SDK integration.
+
+Safe next steps are protocol isolation and tests against mock responses first; do not attempt any unlock operation. A failed Smart Life web login should remain a diagnostic outcome, not evidence that the account password is wrong.
