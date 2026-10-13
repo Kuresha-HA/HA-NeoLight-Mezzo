@@ -1,0 +1,11 @@
+{
+  "domain": "neolight_mezzo",
+  "name": "NeoLight MEZZO",
+  "codeowners": [],
+  "config_flow": true,
+  "documentation": "https://github.com/Kuresha-HA/HA-NeoLight-Mezzo",
+  "iot_class": "cloud_polling",
+  "integration_type": "hub",
+  "requirements": [],
+  "version": "0.1.0"
+}
