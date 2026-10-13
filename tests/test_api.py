@@ -1,14 +1,14 @@
-"""Unit tests for the Tuya mobile API signer and request formatting.
-
-Load api.py directly so collecting these tests does not import the Home
-Assistant integration package (Home Assistant is not installed in CI).
-"""
-
+"""Unit tests for the ThingClips mobile API signer and request envelope."""
 import asyncio
 import hashlib
+import hmac
 import importlib.util
 import json
 from pathlib import Path
+from urllib.parse import parse_qs
+
+from cryptography.hazmat.primitives.asymmetric import rsa, padding
+from cryptography.hazmat.primitives import hashes
 
 _API_PATH = (
     Path(__file__).resolve().parents[1]
@@ -24,6 +24,20 @@ _SPEC.loader.exec_module(_API)
 _encrypt_password = _API._encrypt_password
 _mobile_hash = _API._mobile_hash
 _signature = _API._signature
+_ch_key = _API._ch_key
+_master_key_g = _API._master_key_g
+_encrypt_post_data = _API._encrypt_post_data
+_decrypt_et3_result = _API._decrypt_et3_result
+
+
+def _profile():
+    return {
+        "app_key": "12345678901234567890",
+        "app_secret": "a" * 32,
+        "cert_sha256": ":".join(["AB"] * 32),
+        "bmp_token": "0123456789abcdef" * 4,
+        "ttid": "rawsdk",
+    }
 
 
 def test_mobile_hash_uses_expected_digest_permutation():
@@ -38,18 +52,55 @@ def test_signature_sorts_and_filters_parameters():
         "clientId": "12345678901234567890",
         "a": "test.action",
     }
-    assert _signature(params, "test-signing-key") == (
+    assert _signature(params, b"test-signing-key") == (
         "8d9b84c7cc6c12dfad706102e1c5b0b165a4acdce5d5e24770cb333329a3278f"
     )
 
 
-def test_password_encryption_has_legacy_prefix():
-    # A toy modulus/exponent is used only to test deterministic encoding.
-    password = "test"
-    modulus = str((1 << 256) - 189)
-    result = _encrypt_password(password, modulus, "1")
-    assert result.startswith("0" * 64)
-    assert result.endswith(hashlib.md5(password.encode()).hexdigest().encode("ascii").hex())
+def test_ch_key_is_8_hex_characters_and_matches_hmac_slice():
+    profile = _profile()
+    cert = _API._cert_colon_upper(profile)
+    msg = f"{_API.APP_PACKAGE_NAME}_{cert}".encode()
+    expected = hmac.new(profile["app_key"].encode(), msg, hashlib.sha256).hexdigest()[8:16]
+    value = _ch_key(profile)
+    assert value == expected
+    assert len(value) == 8
+    assert all(c in "0123456789abcdef" for c in value)
+
+
+def test_master_key_uses_package_cert_raw_bmp_token_and_secret():
+    profile = _profile()
+    expected = b"_".join((
+        _API.APP_PACKAGE_NAME.encode(),
+        _API._cert_colon_upper(profile).encode(),
+        bytes.fromhex(profile["bmp_token"]),
+        profile["app_secret"].encode(),
+    ))
+    assert _master_key_g(profile) == expected
+
+
+def test_et3_encrypt_decrypt_round_trip():
+    profile = _profile()
+    master = _master_key_g(profile)
+    request_id = "b5ef7dc7-bb72-4a19-a67b-8f7b2ac12345"
+    body = '{"countryCode":"380","username":"test@example.com","isUid":false}'
+    encrypted = _encrypt_post_data(body, request_id, master)
+    assert encrypted != body
+    # Round-trip through the same ET=3 primitive without exposing payload in logs.
+    import base64
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    raw = base64.b64decode(encrypted)
+    plain = AESGCM(_API._et3_key(request_id, master)).decrypt(raw[:12], raw[12:], None)
+    assert plain.decode() == body
+
+
+def test_password_encryption_uses_rsa_pkcs1v15_of_md5_hex():
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=1024)
+    public_numbers = private_key.public_key().public_numbers()
+    password = "test-password"
+    encrypted_hex = _encrypt_password(password, str(public_numbers.n), str(public_numbers.e))
+    decrypted = private_key.decrypt(bytes.fromhex(encrypted_hex), padding.PKCS1v15())
+    assert decrypted == hashlib.md5(password.encode()).hexdigest().encode("ascii")
 
 
 class _FakeResponse:
@@ -74,65 +125,49 @@ class _FakeSession:
         return _FakeResponse()
 
 
-def test_post_data_is_signed_but_sent_only_in_form_body():
+def test_request_has_chkey_and_sends_signed_et3_form_without_query_params():
     session = _FakeSession()
-    profile = {
-        "app_key": "12345678901234567890",
-        "signing_key": "test-signing-key",
-        "ttid": "testtt",
-    }
+    profile = _profile()
     client = _API.NeoLightMobileApi(
         session, "user@example.com", "password", "380", profile
     )
-
-    asyncio.run(client._request("test.action", {"x": 1}, requires_sid=False))
-
+    asyncio.run(client._request(
+        "thing.m.user.username.token.get",
+        {"countryCode": "380", "username": "user@example.com", "isUid": False},
+        version="2.0",
+        requires_sid=False,
+    ))
     request = session.request
     assert request is not None
-    params = request["params"]
-    form = request["data"]
-    body = json.dumps({"x": 1}, separators=(",", ":"), ensure_ascii=False)
-    assert "postData" not in params
-    assert params["ttid"] == "sdk_international@12345678901234567890"
-    assert form == {"postData": body}
-    signing_params = {key: value for key, value in params.items() if key != "sign"}
-    signing_params["postData"] = body
-    assert params["sign"] == _signature(signing_params, profile["signing_key"])
+    assert request["url"] == _API.ENDPOINT_EU
+    assert "params" not in request
+    assert request["headers"]["x-client-trace-id"]
+    form = parse_qs(request["data"])
+    assert form["a"] == ["smartlife.m.user.username.token.get"]
+    assert form["ttid"] == [f"sdk_international@{profile['app_key']}"]
+    assert form["chKey"] == [_ch_key(profile)]
+    assert len(form["chKey"][0]) == 8
+    assert form["et"] == ["3"]
+    assert form["channel"] == ["oem"]
+    assert "postData" in form
+    signing_params = {key: values[0] for key, values in form.items() if key not in {"sign", "postData"}}
+    signing_params["postData"] = form["postData"][0]
+    assert form["sign"] == [_signature(signing_params, _master_key_g(profile))]
 
 
-
-def test_device_discovery_enriches_list_entries_with_details():
+def test_device_discovery_uses_thingclips_home_and_device_actions():
     client = _API.NeoLightMobileApi(
-        _FakeSession(),
-        "user@example.com",
-        "password",
-        "380",
-        {
-            "app_key": "12345678901234567890",
-            "signing_key": "test-signing-key",
-            "ttid": "testtt",
-        },
+        _FakeSession(), "user@example.com", "password", "380", _profile()
     )
     calls = []
 
     async def fake_request(action, post_data=None, **kwargs):
         calls.append((action, post_data, kwargs))
-        if action == "tuya.m.my.group.device.list":
+        if action == "m.life.my.group.device.list":
             return [{"devId": "device-1", "name": "Intercom", "isOnline": True}]
-        if action == "tuya.m.device.get":
-            return {"devId": "device-1", "productId": "product-1", "category": "sp"}
         raise AssertionError(f"Unexpected action: {action}")
 
     client._request = fake_request
-    devices = asyncio.run(client.get_devices("home-1"))
-
-    assert devices == [{
-        "devId": "device-1",
-        "name": "Intercom",
-        "isOnline": True,
-        "productId": "product-1",
-        "category": "sp",
-    }]
-    assert calls[0][0] == "tuya.m.my.group.device.list"
-    assert calls[1][0] == "tuya.m.device.get"
-    assert calls[1][1] == {"devId": "device-1"}
+    devices = asyncio.run(client.get_devices("123"))
+    assert devices == [{"devId": "device-1", "name": "Intercom", "isOnline": True}]
+    assert calls == [("m.life.my.group.device.list", {"gid": 123}, {"version": "2.2", "ecode": None})]
