@@ -6,7 +6,6 @@ import logging
 
 import voluptuous as vol
 from homeassistant import config_entries
-from homeassistant.core import callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import (
@@ -77,20 +76,3 @@ class NeoLightConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             ),
             errors=self._errors,
         )
-
-    @staticmethod
-    @callback
-    def async_get_options_flow(config_entry):
-        """Return options flow."""
-        return NeoLightOptionsFlow(config_entry)
-
-
-class NeoLightOptionsFlow(config_entries.OptionsFlow):
-    """Placeholder for future device and refresh options."""
-
-    def __init__(self, config_entry) -> None:
-        self.config_entry = config_entry
-
-    async def async_step_init(self, user_input=None):
-        """No options are exposed yet."""
-        return self.async_abort(reason="not_supported")
