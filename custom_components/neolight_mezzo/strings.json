@@ -1,7 +1,24 @@
 {
   "config": {
+    "step": {
+      "user": {
+        "title": "Connect NeoLight account",
+        "description": "Experimental Tuya mobile-cloud login. This first version supports email/password login only.",
+        "data": {
+          "username": "Email address",
+          "password": "Password",
+          "country_code": "Account country calling code (for Ukraine, 380)"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "The account identifier or password was rejected.",
+      "cannot_connect": "Could not complete the cloud request. The mobile API parameters may not match this app version.",
+      "profile_missing": "The local mobile signing profile is missing. Place mobile_profile.json beside the integration files; never commit it to GitHub.",
+      "unknown": "Unexpected error. Check the Home Assistant log for the redacted error."
+    },
     "abort": {
-      "cloud_auth_not_implemented": "NeoLight cloud authentication is still being researched. No credentials were collected."
+      "already_configured": "This account is already configured."
     }
   }
 }
