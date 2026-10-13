@@ -6,6 +6,8 @@
   "documentation": "https://github.com/Kuresha-HA/HA-NeoLight-Mezzo",
   "iot_class": "cloud_polling",
   "integration_type": "hub",
-  "requirements": [],
-  "version": "0.3.6"
+  "requirements": [
+    "cryptography>=42.0.0"
+  ],
+  "version": "0.3.7"
 }
