@@ -174,6 +174,31 @@ def test_device_discovery_uses_thingclips_home_and_device_actions():
 
 
 
+def test_phone_login_uses_api_endpoint_returned_by_cloud():
+    session = _FakeSession()
+    client = _API.NeoLightMobileApi(
+        session, "+380501234567", "password", "380", _profile()
+    )
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=1024)
+    numbers = private_key.public_key().public_numbers()
+
+    async def token_and_login(action, post_data=None, **kwargs):
+        if action == "thing.m.user.username.token.get":
+            return {"publicKey": str(numbers.n), "exponent": str(numbers.e), "token": "ticket"}
+        if action == "thing.m.user.mobile.passwd.login":
+            return {
+                "sid": "phone-session",
+                "ecode": "phone-ecode",
+                "domain": {"mobileApiUrl": "https://regional.example.com"},
+            }
+        raise AssertionError(f"Unexpected action: {action}")
+
+    client._request = token_and_login
+    asyncio.run(client.login_phone())
+    assert client.session_id == "phone-session"
+    assert client._endpoint == "https://regional.example.com/api.json"
+
+
 def test_email_login_passes_mfa_code_inside_options():
     client = _API.NeoLightMobileApi(
         _FakeSession(), "user@example.com", "password", "380", _profile()
