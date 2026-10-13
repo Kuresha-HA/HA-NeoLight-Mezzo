@@ -164,7 +164,7 @@ class NeoLightMobileApi:
             "os": "Android",
             "lang": "en",
             "appVersion": "1.1.0",
-            "ttid": f"sdk_international@{self._profile['app_key']}",
+            "ttid": self._profile["ttid"],
             "et": "0.0.1",
             "channel": "oem",
             "platform": "Android",
