@@ -47,8 +47,25 @@ jobs:
             }
 
             if (existing) {
-              core.info('Tag ' + tag + ' already exists; nothing to publish.');
-              return;
+              try {
+                const release = await github.rest.repos.getReleaseByTag({ owner, repo, tag });
+                if (release.data.prerelease) {
+                  await github.rest.repos.updateRelease({
+                    owner,
+                    repo,
+                    release_id: release.data.id,
+                    prerelease: false
+                  });
+                  core.info('Marked existing release ' + tag + ' as a stable HACS release.');
+                } else {
+                  core.info('Release ' + tag + ' already exists as a stable release.');
+                }
+              } catch (error) {
+                if (error.status !== 404) throw error;
+                core.info('Tag ' + tag + ' exists without a release; creating the release below.');
+              }
+              const releaseCheck = await github.rest.repos.getReleaseByTag({ owner, repo, tag }).catch(() => null);
+              if (releaseCheck) return;
             }
 
             await github.rest.git.createRef({
