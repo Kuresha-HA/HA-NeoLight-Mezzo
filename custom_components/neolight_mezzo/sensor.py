@@ -7,7 +7,7 @@ from typing import Any
 
 from homeassistant.components.sensor import SensorEntity
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -22,17 +22,33 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Create coordinator-backed sensors for the current cloud device snapshot."""
+    """Create coordinator-backed sensors and add devices discovered later."""
     coordinator: NeoLightCloudCoordinator = hass.data[DOMAIN][entry.entry_id]
-    devices: list[dict[str, Any]] = coordinator.data.get("devices", [])
+    known_device_ids: set[str] = set()
+
+    def create_device_entities(devices: list[dict[str, Any]]) -> list[SensorEntity]:
+        entities: list[SensorEntity] = []
+        for device in devices:
+            device_id = str(device.get("id") or "")
+            if not device_id or device_id in known_device_ids:
+                continue
+            known_device_ids.add(device_id)
+            entities.append(NeoLightDeviceOnlineSensor(coordinator, entry, device))
+        return entities
+
     async_add_entities(
         [NeoLightDeviceCountSensor(coordinator, entry)]
-        + [
-            NeoLightDeviceOnlineSensor(coordinator, entry, device)
-            for device in devices
-            if device.get("id")
-        ]
+        + create_device_entities(coordinator.data.get("devices", []))
     )
+
+    @callback
+    def _add_new_devices() -> None:
+        """Create entities for devices that appear after the initial setup."""
+        new_entities = create_device_entities(coordinator.data.get("devices", []))
+        if new_entities:
+            async_add_entities(new_entities)
+
+    entry.async_on_unload(coordinator.async_add_listener(_add_new_devices))
 
 
 class NeoLightDeviceCountSensor(CoordinatorEntity[NeoLightCloudCoordinator], SensorEntity):
