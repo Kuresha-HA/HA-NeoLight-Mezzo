@@ -15,7 +15,7 @@ from .api import (
     NeoLightProfileError,
     load_profile,
 )
-from .const import CONF_COUNTRY_CODE, CONF_PASSWORD, CONF_USERNAME, DOMAIN
+from .const import CONF_COUNTRY_CODE, CONF_LOGIN_METHOD, CONF_PASSWORD, CONF_USERNAME, DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -39,7 +39,10 @@ class NeoLightConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     user_input[CONF_COUNTRY_CODE],
                     profile,
                 )
-                await client.login_email()
+                if user_input[CONF_LOGIN_METHOD] == "phone":
+                    await client.login_phone()
+                else:
+                    await client.login_email()
                 homes_raw = await client.get_homes()
                 homes = []
                 devices = []
@@ -69,12 +72,14 @@ class NeoLightConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                                 "category": str(device.get("category") or ""),
                                 "home_id": str(home_id),
                             })
-                await self.async_set_unique_id(username.casefold())
+                login_method = user_input[CONF_LOGIN_METHOD]
+                await self.async_set_unique_id(f"{login_method}:{username.casefold()}")
                 self._abort_if_unique_id_configured()
                 return self.async_create_entry(
                     title=f"NeoLight ({username})",
                     data={
                         CONF_USERNAME: username,
+                        CONF_LOGIN_METHOD: login_method,
                         CONF_PASSWORD: user_input[CONF_PASSWORD],
                         CONF_COUNTRY_CODE: user_input[CONF_COUNTRY_CODE],
                         "homes": homes,
@@ -97,6 +102,7 @@ class NeoLightConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             step_id="user",
             data_schema=vol.Schema(
                 {
+                    vol.Required(CONF_LOGIN_METHOD, default="email"): vol.In(["email", "phone"]),
                     vol.Required(CONF_USERNAME): str,
                     vol.Required(CONF_PASSWORD): str,
                     vol.Required(CONF_COUNTRY_CODE, default="380"): str,
