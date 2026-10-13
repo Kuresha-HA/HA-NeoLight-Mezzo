@@ -58,7 +58,12 @@ def load_profile() -> dict[str, str]:
     required = ("app_key", "app_secret", "cert_sha256", "embedded_key", "ttid")
     if any(not isinstance(profile.get(key), str) or not profile[key] for key in required):
         raise NeoLightProfileError("The local mobile profile is incomplete.")
-    if len(profile["app_key"]) != 20 or len(profile["app_secret"]) != 32:
+    if (
+        len(profile["app_key"]) != 20
+        or len(profile["app_secret"]) != 32
+        or len(profile["embedded_key"]) != 32
+        or len(profile["cert_sha256"]) != 95
+    ):
         raise NeoLightProfileError("The local mobile profile has invalid key lengths.")
     profile["signing_key"] = "_".join(
         (profile["cert_sha256"], profile["embedded_key"], profile["app_secret"])
