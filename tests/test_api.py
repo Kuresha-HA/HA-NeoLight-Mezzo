@@ -93,7 +93,7 @@ def test_post_data_is_signed_but_sent_only_in_form_body():
     form = request["data"]
     body = json.dumps({"x": 1}, separators=(",", ":"), ensure_ascii=False)
     assert "postData" not in params
-    assert params["ttid"] == "testtt"
+    assert params["ttid"] == "sdk_international@12345678901234567890"
     assert form == {"postData": body}
     signing_params = {key: value for key, value in params.items() if key != "sign"}
     signing_params["postData"] = body
