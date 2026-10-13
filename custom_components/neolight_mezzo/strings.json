@@ -21,7 +21,8 @@
     "error": {
       "invalid_auth": "The account identifier or password was rejected.",
       "cannot_connect": "Could not complete the cloud request. The mobile API parameters may not match this app version.",
-      "profile_missing": "The local mobile signing profile is missing. Place mobile_profile.json beside the integration files; never commit it to GitHub.",
+      "profile_missing": "The local mobile signing profile is missing or outdated. Regenerate it from the official NeoLight APK and keep it private.",
+      "mfa_required": "The NeoLight cloud requested an email verification code. The current config flow does not yet support this challenge.",
       "unknown": "Unexpected error. Check the Home Assistant log for the redacted error."
     },
     "abort": {
