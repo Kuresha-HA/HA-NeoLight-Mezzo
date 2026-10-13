@@ -1,9 +1,14 @@
 """NeoLight MEZZO Home Assistant integration."""
 
-from homeassistant.core import HomeAssistant
+from __future__ import annotations
+
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import Platform
+from homeassistant.core import HomeAssistant
 
 from .const import DOMAIN
+
+PLATFORMS: list[Platform] = [Platform.SENSOR]
 
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
@@ -12,13 +17,18 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Set up a config entry once cloud auth has been verified."""
-    hass.data.setdefault(DOMAIN, {})
-    # Authentication and device discovery are intentionally not faked here.
+    """Set up discovered NeoLight device snapshot entities."""
+    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {
+        "homes": entry.data.get("homes", []),
+        "devices": entry.data.get("devices", []),
+    }
+    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Unload a config entry."""
-    hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
-    return True
+    """Unload platforms and clear cached discovery data."""
+    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    if unload_ok:
+        hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
+    return unload_ok
