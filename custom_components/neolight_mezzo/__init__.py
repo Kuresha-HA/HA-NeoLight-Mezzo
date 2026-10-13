@@ -22,6 +22,7 @@ from .api import (
     NeoLightMobileApi,
     load_profile,
 )
+from .cloud_data import normalize_snapshot
 from .const import (
     CONF_COUNTRY_CODE,
     CONF_LOGIN_METHOD,
@@ -33,40 +34,6 @@ from .const import (
 _LOGGER = logging.getLogger(__name__)
 PLATFORMS: list[Platform] = [Platform.SENSOR]
 UPDATE_INTERVAL = timedelta(minutes=5)
-
-
-def _normalize_snapshot(
-    homes_raw: list[Any], devices_by_home: dict[str, list[Any]]
-) -> dict[str, list[dict[str, Any]]]:
-    """Normalize cloud records while retaining only non-sensitive metadata."""
-    homes: list[dict[str, Any]] = []
-    devices: list[dict[str, Any]] = []
-    for home in homes_raw:
-        if not isinstance(home, dict):
-            continue
-        home_id = home.get("groupId") or home.get("gid") or home.get("homeId")
-        if home_id is None:
-            continue
-        home_id = str(home_id)
-        homes.append({
-            "id": home_id,
-            "name": str(home.get("name") or home.get("groupName") or "NeoLight home"),
-        })
-        for device in devices_by_home.get(home_id, []):
-            if not isinstance(device, dict):
-                continue
-            device_id = device.get("devId") or device.get("id")
-            if device_id is None or not str(device_id):
-                continue
-            devices.append({
-                "id": str(device_id),
-                "name": str(device.get("name") or "NeoLight device"),
-                "online": bool(device.get("isOnline", False)),
-                "product_id": str(device.get("productId") or ""),
-                "category": str(device.get("category") or ""),
-                "home_id": home_id,
-            })
-    return {"homes": homes, "devices": devices}
 
 
 class NeoLightCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
@@ -103,33 +70,29 @@ class NeoLightCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             await client.login_email()
         self.client = client
 
+    async def _fetch_snapshot(self) -> dict[str, Any]:
+        """Fetch homes and devices using the active authenticated session."""
+        assert self.client is not None
+        homes_raw = await self.client.get_homes()
+        devices_by_home: dict[str, list[Any]] = {}
+        for home in homes_raw:
+            if not isinstance(home, dict):
+                continue
+            home_id = home.get("groupId") or home.get("gid") or home.get("homeId")
+            if home_id is not None:
+                devices_by_home[str(home_id)] = await self.client.get_devices(str(home_id))
+        return normalize_snapshot(homes_raw, devices_by_home)
+
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch a fresh snapshot, re-authenticating once if the session expired."""
         try:
             if self.client is None or not self.client.session_id:
                 await self._login()
-            assert self.client is not None
             try:
-                homes_raw = await self.client.get_homes()
-                devices_by_home: dict[str, list[Any]] = {}
-                for home in homes_raw:
-                    if not isinstance(home, dict):
-                        continue
-                    home_id = home.get("groupId") or home.get("gid") or home.get("homeId")
-                    if home_id is not None:
-                        devices_by_home[str(home_id)] = await self.client.get_devices(str(home_id))
+                return await self._fetch_snapshot()
             except NeoLightAuthError:
                 await self._login()
-                assert self.client is not None
-                homes_raw = await self.client.get_homes()
-                devices_by_home = {}
-                for home in homes_raw:
-                    if not isinstance(home, dict):
-                        continue
-                    home_id = home.get("groupId") or home.get("gid") or home.get("homeId")
-                    if home_id is not None:
-                        devices_by_home[str(home_id)] = await self.client.get_devices(str(home_id))
-            return _normalize_snapshot(homes_raw, devices_by_home)
+                return await self._fetch_snapshot()
         except NeoLightApiError as err:
             raise UpdateFailed(f"Unable to refresh NeoLight cloud data: {err}") from err
         except (KeyError, OSError, ValueError) as err:
