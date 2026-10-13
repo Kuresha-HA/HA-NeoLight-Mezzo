@@ -180,15 +180,6 @@ def test_email_login_passes_mfa_code_inside_options():
     )
     calls = []
 
-    async def fake_request(action, post_data=None, **kwargs):
-        calls.append((action, post_data, kwargs))
-        if action == "thing.m.user.username.token.get":
-            return {"publicKey": "123", "exponent": "65537", "token": "ticket"}
-        if action == "thing.m.user.email.password.login":
-            return {"sid": "session"}
-        raise AssertionError(f"Unexpected action: {action}")
-
-    client._request = fake_request
     # A real RSA modulus is needed by the password encryption helper.
     private_key = rsa.generate_private_key(public_exponent=65537, key_size=1024)
     numbers = private_key.public_key().public_numbers()
