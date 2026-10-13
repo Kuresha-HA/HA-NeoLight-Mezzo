@@ -136,6 +136,7 @@ class NeoLightMobileApi:
         *,
         version: str = "1.0",
         requires_sid: bool = True,
+        extra_params: dict[str, Any] | None = None,
     ) -> dict[str, Any] | list[Any]:
         """Send one signed request without logging secrets or response payloads."""
         if requires_sid is False:
@@ -162,6 +163,8 @@ class NeoLightMobileApi:
         }
         if sid:
             params["sid"] = sid
+        if extra_params:
+            params.update(extra_params)
         if body is not None:
             params["postData"] = body
         params["sign"] = _signature(params, self._profile["signing_key"])
@@ -245,7 +248,11 @@ class NeoLightMobileApi:
 
     async def get_devices(self, home_id: str) -> list[Any]:
         """Return device list for one home."""
-        result = await self._request("tuya.m.my.group.device.list", version="1.0")
+        result = await self._request(
+            "tuya.m.my.group.device.list",
+            version="1.0",
+            extra_params={"gid": home_id},
+        )
         if not isinstance(result, list):
             raise NeoLightApiError("Unexpected device-list response.")
         return result
