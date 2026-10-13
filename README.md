@@ -6,7 +6,7 @@ Custom Home Assistant integration research for the NeoLight MEZZO HD WF video in
 
 The official NeoLight 1.1.0 APK uses a ThingSmart/ThingClips-derived mobile cloud API. The repository now contains an initial implementation of the mobile request signer, enhanced email/password login, and discovery of homes/devices.
 
-**This has not yet been live-validated against the NeoLight account.** The account login path, effective API host, and app-specific request parameters may still need adjustment. The config flow currently supports email/password login only; phone-number login is not implemented.
+**This has not yet been live-validated against the NeoLight account.** The email/password login uses a documented/reverse-engineered Tuya mobile flow. Phone/password login is included using inferred legacy action names and may need adjustment. The effective API host and app-specific request parameters also require a live test.
 
 ### Local signing profile required
 
@@ -27,6 +27,7 @@ Do not commit this file, publish its contents, or include it in issue reports. T
 
 - Mobile API HMAC-SHA256 request signing with transformed MD5 body digest.
 - Enhanced email login using a one-time RSA public key.
+- Experimental phone login path using analogous but not yet confirmed action names.
 - EU endpoint default (`a1.tuyaeu.com`) with support for the endpoint returned by login.
 - Home/location enumeration and device-list requests.
 - Diagnostic sensors that snapshot discovered device count and online state at setup.
@@ -34,7 +35,6 @@ Do not commit this file, publish its contents, or include it in issue reports. T
 
 ## Not implemented yet
 
-- Phone-number login.
 - Refreshing the login session and periodically updating discovery entities.
 - Door unlock, live video, and two-way audio.
 
@@ -47,7 +47,8 @@ The SDK's generic remote-unlock workflow has been researched but must not be inv
 3. Restart Home Assistant.
 4. Add **NeoLight MEZZO** from Settings → Devices & services.
 5. Enter the account email, password, and account country calling code (Ukraine: `380`).
-6. Check the config-flow result and the Home Assistant log. If login fails, provide only the error code/message; do not send passwords, tokens, cookies, or request signatures.
+6. Choose the login method. For phone login, enter the phone number without the country calling code, then set the country code separately.
+7. Check the config-flow result and the Home Assistant log. If login fails, provide only the error code/message; do not send passwords, tokens, cookies, or request signatures.
 
 ## Research notes
 
