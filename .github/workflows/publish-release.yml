@@ -89,8 +89,8 @@ jobs:
                 'The local mobile_profile.json file is intentionally not included; keep it beside the integration files and never publish it.'
               ].join('\\n'),
               draft: false,
-              prerelease: true,
+              prerelease: false,
               generate_release_notes: true
             });
 
-            core.info('Published prerelease ' + tag);
+            core.info('Published stable release ' + tag);
