@@ -80,7 +80,18 @@ class NeoLightCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 continue
             home_id = home.get("groupId") or home.get("gid") or home.get("homeId")
             if home_id is not None:
-                devices_by_home[str(home_id)] = await self.client.get_devices(str(home_id))
+                try:
+                    devices_by_home[str(home_id)] = await self.client.get_devices(str(home_id))
+                except NeoLightAuthError:
+                    # An expired session must escape so the caller can re-login.
+                    raise
+                except NeoLightApiError:
+                    # A transient failure for one home should not mark every
+                    # device sensor unavailable; retain other homes' results.
+                    _LOGGER.warning(
+                        "Could not refresh device list for one NeoLight home."
+                    )
+                    devices_by_home[str(home_id)] = []
         return normalize_snapshot(homes_raw, devices_by_home)
 
     async def _async_update_data(self) -> dict[str, Any]:
