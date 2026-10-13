@@ -3,11 +3,18 @@
     "step": {
       "user": {
         "title": "Connect NeoLight account",
-        "description": "Experimental Tuya mobile-cloud login. This first version supports email/password login only.",
+        "description": "Experimental Tuya mobile-cloud login. Phone login uses inferred legacy action names and may not work with this app version.",
         "data": {
-          "username": "Email address",
+          "login_method": "Login method",
+          "username": "Email address or phone number (without country code)",
           "password": "Password",
           "country_code": "Account country calling code (for Ukraine, 380)"
+        },
+        "options": {
+          "login_method": {
+            "email": "Email address",
+            "phone": "Phone number"
+          }
         }
       }
     },
