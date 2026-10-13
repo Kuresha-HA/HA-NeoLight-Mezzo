@@ -90,8 +90,10 @@ class NeoLightConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 errors["base"] = "profile_missing"
             except NeoLightAuthError:
                 errors["base"] = "invalid_auth"
-            except NeoLightApiError:
-                _LOGGER.warning("NeoLight cloud setup failed; see form error for details.")
+            except NeoLightApiError as err:
+                # API errors contain only a sanitized error code/message; never
+                # log request URLs, signatures, account credentials, or payloads.
+                _LOGGER.warning("NeoLight cloud setup failed: %s", err)
                 errors["base"] = "cannot_connect"
             except Exception as err:
                 # Avoid logging exception details that may contain signed request URLs.
