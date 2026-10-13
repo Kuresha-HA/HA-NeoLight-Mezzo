@@ -171,3 +171,37 @@ def test_device_discovery_uses_thingclips_home_and_device_actions():
     devices = asyncio.run(client.get_devices("123"))
     assert devices == [{"devId": "device-1", "name": "Intercom", "isOnline": True}]
     assert calls == [("m.life.my.group.device.list", {"gid": 123}, {"version": "2.2", "ecode": None})]
+
+
+
+def test_email_login_passes_mfa_code_inside_options():
+    client = _API.NeoLightMobileApi(
+        _FakeSession(), "user@example.com", "password", "380", _profile()
+    )
+    calls = []
+
+    async def fake_request(action, post_data=None, **kwargs):
+        calls.append((action, post_data, kwargs))
+        if action == "thing.m.user.username.token.get":
+            return {"publicKey": "123", "exponent": "65537", "token": "ticket"}
+        if action == "thing.m.user.email.password.login":
+            return {"sid": "session"}
+        raise AssertionError(f"Unexpected action: {action}")
+
+    client._request = fake_request
+    # A real RSA modulus is needed by the password encryption helper.
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=1024)
+    numbers = private_key.public_key().public_numbers()
+    async def token_and_login(action, post_data=None, **kwargs):
+        calls.append((action, post_data, kwargs))
+        if action == "thing.m.user.username.token.get":
+            return {"publicKey": str(numbers.n), "exponent": str(numbers.e), "token": "ticket"}
+        if action == "thing.m.user.email.password.login":
+            return {"sid": "session"}
+        raise AssertionError(f"Unexpected action: {action}")
+    client._request = token_and_login
+
+    asyncio.run(client.login_email(mfa_code="123456"))
+    login_call = next(call for call in calls if call[0] == "thing.m.user.email.password.login")
+    assert json.loads(login_call[1]["options"]) == {"group": 1, "mfaCode": "123456"}
+    assert client.session_id == "session"
