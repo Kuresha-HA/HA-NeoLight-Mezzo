@@ -249,6 +249,50 @@ class NeoLightMobileApi:
             if host.startswith("https://"):
                 self._endpoint = host if host.endswith("/api.json") else host + "/api.json"
 
+    async def login_phone(self) -> None:
+        """Attempt the analogous enhanced phone/password mobile login flow.
+
+        The method is exposed by the bundled SDK, but these legacy API action
+        names have not yet been confirmed from a live NeoLight login.
+        """
+        token_result = await self._request(
+            "tuya.m.user.phone.token.create",
+            {"countryCode": self._country_code, "phone": self._username},
+            requires_sid=False,
+        )
+        if not isinstance(token_result, dict):
+            raise NeoLightAuthError("Unexpected phone login-token response.")
+        try:
+            encrypted_password = _encrypt_password(
+                self._password,
+                str(token_result["publicKey"]),
+                str(token_result["exponent"]),
+            )
+            token = str(token_result["token"])
+        except (KeyError, ValueError, TypeError) as err:
+            raise NeoLightAuthError("Phone login-token response is incomplete.") from err
+
+        login_result = await self._request(
+            "tuya.m.user.phone.password.login",
+            {
+                "countryCode": self._country_code,
+                "phone": self._username,
+                "passwd": encrypted_password,
+                "ifencrypt": 1,
+                "options": {"group": 1},
+                "token": token,
+            },
+            requires_sid=False,
+        )
+        if not isinstance(login_result, dict) or not login_result.get("sid"):
+            raise NeoLightAuthError("Phone login did not return a session.")
+        self._sid = str(login_result["sid"])
+        domain = login_result.get("domain")
+        if isinstance(domain, dict) and domain.get("mobileApiUrl"):
+            host = str(domain["mobileApiUrl"]).rstrip("/")
+            if host.startswith("https://"):
+                self._endpoint = host if host.endswith("/api.json") else host + "/api.json"
+
     async def get_homes(self) -> list[Any]:
         """Return locations/homes visible to the signed-in account."""
         result = await self._request("tuya.m.location.list")
