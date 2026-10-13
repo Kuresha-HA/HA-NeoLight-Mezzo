@@ -2,7 +2,7 @@
 
 Custom Home Assistant integration research for the NeoLight MEZZO HD WF video intercom.
 
-## Current status — experimental 0.3.1
+## Current status — experimental 0.3.2
 
 The official NeoLight 1.1.0 APK uses a ThingSmart/ThingClips-derived mobile cloud API. The repository now contains an initial implementation of the mobile request signer, enhanced email/password login, and discovery of homes/devices.
 
