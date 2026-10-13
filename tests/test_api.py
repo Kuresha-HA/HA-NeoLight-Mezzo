@@ -1,11 +1,13 @@
-"""Unit tests for the Tuya mobile API signer.
+"""Unit tests for the Tuya mobile API signer and request formatting.
 
-Load api.py directly so collecting these unit tests does not import the
-Home Assistant integration package (Home Assistant is not installed in CI).
+Load api.py directly so collecting these tests does not import the Home
+Assistant integration package (Home Assistant is not installed in CI).
 """
 
+import asyncio
 import hashlib
 import importlib.util
+import json
 from pathlib import Path
 
 _API_PATH = (
@@ -48,3 +50,50 @@ def test_password_encryption_has_legacy_prefix():
     result = _encrypt_password(password, modulus, "1")
     assert result.startswith("0" * 64)
     assert result.endswith(hashlib.md5(password.encode()).hexdigest().encode("ascii").hex())
+
+
+class _FakeResponse:
+    status = 200
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        return None
+
+    async def json(self, content_type=None):
+        return {"success": True, "result": []}
+
+
+class _FakeSession:
+    def __init__(self):
+        self.request = None
+
+    def post(self, url, **kwargs):
+        self.request = {"url": url, **kwargs}
+        return _FakeResponse()
+
+
+def test_post_data_is_signed_but_sent_only_in_form_body():
+    session = _FakeSession()
+    profile = {
+        "app_key": "12345678901234567890",
+        "signing_key": "test-signing-key",
+        "ttid": "testtt",
+    }
+    client = _API.NeoLightMobileApi(
+        session, "user@example.com", "password", "380", profile
+    )
+
+    asyncio.run(client._request("test.action", {"x": 1}, requires_sid=False))
+
+    request = session.request
+    assert request is not None
+    params = request["params"]
+    form = request["data"]
+    body = json.dumps({"x": 1}, separators=(",", ":"), ensure_ascii=False)
+    assert "postData" not in params
+    assert form == {"postData": body}
+    signing_params = {key: value for key, value in params.items() if key != "sign"}
+    signing_params["postData"] = body
+    assert params["sign"] == _signature(signing_params, profile["signing_key"])
