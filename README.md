@@ -2,7 +2,7 @@
 
 Custom Home Assistant integration research for the NeoLight MEZZO HD WF video intercom.
 
-## Current status — experimental 0.2.0
+## Current status — experimental 0.3.0
 
 The official NeoLight 1.1.0 APK uses a ThingSmart/ThingClips-derived mobile cloud API. The repository now contains an initial implementation of the mobile request signer, enhanced email/password login, and discovery of homes/devices.
 
@@ -29,7 +29,8 @@ Do not commit this file, publish its contents, or include it in issue reports. T
 - Enhanced email login using a one-time RSA public key.
 - Experimental phone login path using analogous but not yet confirmed action names.
 - EU endpoint default (`a1.tuyaeu.com`) with support for the endpoint returned by login.
-- Home/location enumeration and device-list requests.
+- Home/location enumeration and device-list requests, enriched with per-device detail lookups.
+- Unit test covering request-body signing and device-detail enrichment.
 - Diagnostic sensors that snapshot discovered device count and online state at setup.
 - Passwords are entered only in Home Assistant config flow; API payloads and credentials are not logged.
 
