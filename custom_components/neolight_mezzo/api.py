@@ -40,7 +40,7 @@ class NeoLightAuthError(NeoLightApiError):
 
 
 class NeoLightProfileError(NeoLightApiError):
-    """Local app signing profile is missing or invalid."""
+    """Local mobile signing profile is missing or invalid."""
 
 
 def load_profile() -> dict[str, str]:
@@ -151,7 +151,11 @@ class NeoLightMobileApi:
             if not sid:
                 raise NeoLightAuthError("No authenticated mobile API session.")
 
-        body = json.dumps(post_data, separators=(",", ":"), ensure_ascii=False) if post_data is not None else None
+        body = (
+            json.dumps(post_data, separators=(",", ":"), ensure_ascii=False)
+            if post_data is not None
+            else None
+        )
         params: dict[str, Any] = {
             "a": action,
             "v": version,
@@ -175,11 +179,16 @@ class NeoLightMobileApi:
             params["sid"] = sid
         if extra_params:
             params.update(extra_params)
-        if body is not None:
-            params["postData"] = body
-        params["sign"] = _signature(params, self._profile["signing_key"])
 
+        # In the known Tuya mobile API implementation, postData is sent in the
+        # form body, but is included in the signing input. Do not also put it
+        # into the URL query parameters.
+        signing_params = dict(params)
+        if body is not None:
+            signing_params["postData"] = body
+        params["sign"] = _signature(signing_params, self._profile["signing_key"])
         form = {"postData": body} if body is not None else None
+
         try:
             async with self._session.post(
                 self._endpoint,
@@ -235,7 +244,7 @@ class NeoLightMobileApi:
                 "email": self._username,
                 "passwd": encrypted_password,
                 "ifencrypt": 1,
-                "options": {"group": 1},
+                "options": '{"group": 1}',
                 "token": token,
             },
             requires_sid=False,
@@ -279,7 +288,7 @@ class NeoLightMobileApi:
                 "phone": self._username,
                 "passwd": encrypted_password,
                 "ifencrypt": 1,
-                "options": {"group": 1},
+                "options": '{"group": 1}',
                 "token": token,
             },
             requires_sid=False,
