@@ -310,7 +310,7 @@ class NeoLightMobileApi:
         return result
 
     async def get_devices(self, home_id: str) -> list[Any]:
-        """Return device list for one home."""
+        """Return device list for one home, enriched with each device's details."""
         result = await self._request(
             "tuya.m.my.group.device.list",
             version="1.0",
@@ -318,7 +318,33 @@ class NeoLightMobileApi:
         )
         if not isinstance(result, list):
             raise NeoLightApiError("Unexpected device-list response.")
-        return result
+
+        devices: list[Any] = []
+        for item in result:
+            if not isinstance(item, dict):
+                devices.append(item)
+                continue
+            dev_id = item.get("devId") or item.get("id")
+            if not dev_id:
+                devices.append(item)
+                continue
+            try:
+                details = await self._request(
+                    "tuya.m.device.get",
+                    {"devId": str(dev_id)},
+                )
+            except NeoLightApiError:
+                # Some devices may be shared or lack detail permissions.
+                # Keep their list entry instead of failing discovery entirely.
+                devices.append(item)
+                continue
+            if isinstance(details, dict):
+                # Keep the detail payload authoritative while preserving list
+                # fields absent from the details response.
+                devices.append({**item, **details})
+            else:
+                devices.append(item)
+        return devices
 
     @property
     def session_id(self) -> str | None:
