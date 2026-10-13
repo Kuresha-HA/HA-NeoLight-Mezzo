@@ -25,11 +25,9 @@ class NeoLightConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     VERSION = 1
 
-    def __init__(self) -> None:
-        self._errors: dict[str, str] = {}
-
     async def async_step_user(self, user_input=None):
         """Validate account credentials against the EU mobile API."""
+        errors: dict[str, str] = {}
         if user_input is not None:
             username = user_input[CONF_USERNAME].strip()
             try:
@@ -84,16 +82,16 @@ class NeoLightConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     },
                 )
             except NeoLightProfileError:
-                self._errors["base"] = "profile_missing"
+                errors["base"] = "profile_missing"
             except NeoLightAuthError:
-                self._errors["base"] = "invalid_auth"
+                errors["base"] = "invalid_auth"
             except NeoLightApiError:
                 _LOGGER.warning("NeoLight cloud setup failed; see form error for details.")
-                self._errors["base"] = "cannot_connect"
+                errors["base"] = "cannot_connect"
             except Exception as err:
                 # Avoid logging exception details that may contain signed request URLs.
                 _LOGGER.error("Unexpected NeoLight setup error (%s).", type(err).__name__)
-                self._errors["base"] = "unknown"
+                errors["base"] = "unknown"
 
         return self.async_show_form(
             step_id="user",
@@ -104,5 +102,5 @@ class NeoLightConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     vol.Required(CONF_COUNTRY_CODE, default="380"): str,
                 }
             ),
-            errors=self._errors,
+            errors=errors,
         )
