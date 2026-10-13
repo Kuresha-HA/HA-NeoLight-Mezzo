@@ -97,3 +97,41 @@ def test_post_data_is_signed_but_sent_only_in_form_body():
     signing_params = {key: value for key, value in params.items() if key != "sign"}
     signing_params["postData"] = body
     assert params["sign"] == _signature(signing_params, profile["signing_key"])
+
+
+
+def test_device_discovery_enriches_list_entries_with_details():
+    client = _API.NeoLightMobileApi(
+        _FakeSession(),
+        "user@example.com",
+        "password",
+        "380",
+        {
+            "app_key": "12345678901234567890",
+            "signing_key": "test-signing-key",
+            "ttid": "testtt",
+        },
+    )
+    calls = []
+
+    async def fake_request(action, post_data=None, **kwargs):
+        calls.append((action, post_data, kwargs))
+        if action == "tuya.m.my.group.device.list":
+            return [{"devId": "device-1", "name": "Intercom", "isOnline": True}]
+        if action == "tuya.m.device.get":
+            return {"devId": "device-1", "productId": "product-1", "category": "sp"}
+        raise AssertionError(f"Unexpected action: {action}")
+
+    client._request = fake_request
+    devices = asyncio.run(client.get_devices("home-1"))
+
+    assert devices == [{
+        "devId": "device-1",
+        "name": "Intercom",
+        "isOnline": True,
+        "productId": "product-1",
+        "category": "sp",
+    }]
+    assert calls[0][0] == "tuya.m.my.group.device.list"
+    assert calls[1][0] == "tuya.m.device.get"
+    assert calls[1][1] == {"devId": "device-1"}
