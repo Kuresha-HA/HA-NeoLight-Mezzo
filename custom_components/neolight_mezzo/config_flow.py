@@ -50,7 +50,7 @@ class NeoLightConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     async def async_step_mfa(self, user_input: dict[str, Any] | None = None):
         """Complete the cloud's additional email verification step."""
-        credentials = self.context.get("neolight_credentials")
+        credentials = getattr(self, "_pending_credentials", None)
         if not isinstance(credentials, dict):
             return self.async_abort(reason="reauth_failed")
 
@@ -105,7 +105,7 @@ class NeoLightConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             username = values[CONF_USERNAME]
             await self.async_set_unique_id(f"{login_method}:{username.casefold()}")
             self._abort_if_unique_id_configured()
-            self.context.pop("neolight_credentials", None)
+            self._pending_credentials = None
             return self.async_create_entry(
                 title=f"NeoLight ({username})",
                 data={
@@ -119,7 +119,7 @@ class NeoLightConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         except NeoLightMFAError:
             # Keep credentials only in the transient flow context, never in flow
             # options, logs, or a persistent config entry before authentication.
-            self.context["neolight_credentials"] = dict(values)
+            self._pending_credentials = dict(values)
             if mfa_code:
                 errors["base"] = "mfa_invalid"
             else:
