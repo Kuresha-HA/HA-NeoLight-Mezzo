@@ -90,8 +90,9 @@ class NeoLightConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             except NeoLightApiError:
                 _LOGGER.warning("NeoLight cloud setup failed; see form error for details.")
                 self._errors["base"] = "cannot_connect"
-            except Exception:
-                _LOGGER.exception("Unexpected error during NeoLight cloud setup")
+            except Exception as err:
+                # Avoid logging exception details that may contain signed request URLs.
+                _LOGGER.error("Unexpected NeoLight setup error (%s).", type(err).__name__)
                 self._errors["base"] = "unknown"
 
         return self.async_show_form(
