@@ -381,6 +381,10 @@ class NeoLightMobileApi:
         )
         if not isinstance(login_result, dict) or not login_result.get("sid"):
             raise NeoLightAuthError("Cloud login did not return a session.")
+        self._apply_login_session(login_result)
+
+    def _apply_login_session(self, login_result: dict[str, Any]) -> None:
+        """Store session parameters and honor the API host returned by the cloud."""
         self._sid = str(login_result["sid"])
         if login_result.get("ecode"):
             self._ecode = str(login_result["ecode"])
@@ -429,9 +433,7 @@ class NeoLightMobileApi:
         )
         if not isinstance(login_result, dict) or not login_result.get("sid"):
             raise NeoLightAuthError("Phone login did not return a session.")
-        self._sid = str(login_result["sid"])
-        if login_result.get("ecode"):
-            self._ecode = str(login_result["ecode"])
+        self._apply_login_session(login_result)
 
     async def get_homes(self) -> list[Any]:
         """Return homes/groups visible to the signed-in NeoLight account."""
