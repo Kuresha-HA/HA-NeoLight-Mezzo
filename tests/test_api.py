@@ -28,4 +28,4 @@ def test_password_encryption_has_legacy_prefix():
     modulus = str((1 << 256) - 189)
     result = _encrypt_password(password, modulus, "1")
     assert result.startswith("0" * 64)
-    assert result.endswith(hashlib.md5(password.encode()).hexdigest())
+    assert result.endswith(hashlib.md5(password.encode()).hexdigest().encode("ascii").hex())
