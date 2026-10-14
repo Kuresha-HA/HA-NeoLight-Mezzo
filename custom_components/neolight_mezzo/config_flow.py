@@ -80,7 +80,7 @@ class NeoLightConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 values[CONF_USERNAME],
                 values[CONF_PASSWORD],
                 values[CONF_COUNTRY_CODE],
-                load_profile(),
+                await self.hass.async_add_executor_job(load_profile),
             )
             if values[CONF_LOGIN_METHOD] == "phone":
                 await client.login_phone(mfa_code=mfa_code)
@@ -114,6 +114,7 @@ class NeoLightConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     CONF_PASSWORD: values[CONF_PASSWORD],
                     CONF_COUNTRY_CODE: values[CONF_COUNTRY_CODE],
                     **snapshot,
+                    "_initial_cloud_session": client.export_session(),
                 },
             )
         except NeoLightMFAError:
