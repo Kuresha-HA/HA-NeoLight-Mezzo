@@ -108,7 +108,13 @@ class NeoLightCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         phase = "login"
         try:
             if self.client is None or not self.client.session_id:
-                await self._login()
+                initial_session = self.entry.data.get("_initial_cloud_session")
+                if isinstance(initial_session, dict):
+                    self.client = await self._new_client()
+                    self.client.restore_session(initial_session)
+                    _LOGGER.debug("NeoLight: reusing the session established during config flow.")
+                else:
+                    await self._login()
             phase = "fetching homes/devices"
             try:
                 return await self._fetch_snapshot()
@@ -138,6 +144,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     except Exception as err:
         # Do not expose exception details; requests may include account-related data.
         raise ConfigEntryNotReady("Could not initialize the NeoLight cloud session.") from err
+
+    # The session is transferred only to avoid an immediate duplicate login
+    # during setup. Do not persist the short-lived token after it is in memory.
+    if "_initial_cloud_session" in entry.data:
+        cleaned_data = dict(entry.data)
+        cleaned_data.pop("_initial_cloud_session", None)
+        hass.config_entries.async_update_entry(entry, data=cleaned_data)
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
