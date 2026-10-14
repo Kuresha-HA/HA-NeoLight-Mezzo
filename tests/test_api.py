@@ -221,3 +221,35 @@ def test_email_login_passes_mfa_code_inside_options():
     login_call = next(call for call in calls if call[0] == "thing.m.user.email.password.login")
     assert json.loads(login_call[1]["options"]) == {"group": 1, "mfaCode": "123456"}
     assert client.session_id == "session"
+
+
+
+def test_cloud_session_can_be_exported_and_restored_without_login():
+    original = _API.NeoLightMobileApi(
+        _FakeSession(), "user@example.com", "password", "380", _profile()
+    )
+    original._sid = "short-lived-session"
+    original._ecode = "session-ecode"
+    original._endpoint = "https://regional.example.com/api.json"
+
+    session = original.export_session()
+    restored = _API.NeoLightMobileApi(
+        _FakeSession(), "user@example.com", "password", "380", _profile()
+    )
+    restored.restore_session(session)
+
+    assert restored.session_id == "short-lived-session"
+    assert restored._ecode == "session-ecode"
+    assert restored._endpoint == "https://regional.example.com/api.json"
+
+
+def test_restore_session_rejects_non_https_endpoint():
+    client = _API.NeoLightMobileApi(
+        _FakeSession(), "user@example.com", "password", "380", _profile()
+    )
+    try:
+        client.restore_session({"sid": "session", "endpoint": "http://example.com/api.json"})
+    except _API.NeoLightAuthError:
+        pass
+    else:
+        raise AssertionError("Insecure endpoint must be rejected")
