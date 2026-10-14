@@ -462,6 +462,25 @@ class NeoLightMobileApi:
             raise NeoLightApiError("Unexpected device-list response.")
         return result
 
+    def export_session(self) -> dict[str, str]:
+        """Export short-lived session metadata for handoff from config flow to setup."""
+        if not self._sid:
+            raise NeoLightAuthError("Cannot export an unauthenticated cloud session.")
+        data = {"sid": self._sid, "endpoint": self._endpoint}
+        if self._ecode:
+            data["ecode"] = self._ecode
+        return data
+
+    def restore_session(self, session: dict[str, str]) -> None:
+        """Restore a session established moments earlier by the config flow."""
+        sid = session.get("sid")
+        endpoint = session.get("endpoint")
+        if not sid or not endpoint or not endpoint.startswith("https://"):
+            raise NeoLightAuthError("The saved NeoLight cloud session is invalid.")
+        self._sid = sid
+        self._ecode = session.get("ecode")
+        self._endpoint = endpoint
+
     @property
     def session_id(self) -> str | None:
         """Return the current session ID for the active config flow."""
