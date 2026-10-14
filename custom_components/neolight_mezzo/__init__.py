@@ -2,13 +2,133 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
+import logging
+from typing import Any
+
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.update_coordinator import (
+    DataUpdateCoordinator,
+    UpdateFailed,
+)
 
-from .const import DOMAIN
+from .api import (
+    NeoLightApiError,
+    NeoLightAuthError,
+    NeoLightMobileApi,
+    load_profile,
+)
+from .cloud_data import normalize_snapshot
+from .const import (
+    CONF_COUNTRY_CODE,
+    CONF_LOGIN_METHOD,
+    CONF_PASSWORD,
+    CONF_USERNAME,
+    DOMAIN,
+)
 
+_LOGGER = logging.getLogger(__name__)
 PLATFORMS: list[Platform] = [Platform.SENSOR]
+UPDATE_INTERVAL = timedelta(minutes=5)
+
+
+class NeoLightCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
+    """Poll current home/device metadata from the NeoLight cloud."""
+
+    def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
+        super().__init__(
+            hass,
+            _LOGGER,
+            name=f"{DOMAIN}_{entry.entry_id}",
+            update_interval=UPDATE_INTERVAL,
+            config_entry=entry,
+        )
+        self.entry = entry
+        self.client: NeoLightMobileApi | None = None
+
+    async def _new_client(self) -> NeoLightMobileApi:
+        """Build a client without blocking Home Assistant's event loop on disk I/O."""
+        data = self.entry.data
+        profile = await self.hass.async_add_executor_job(load_profile)
+        return NeoLightMobileApi(
+            async_get_clientsession(self.hass),
+            str(data[CONF_USERNAME]),
+            str(data[CONF_PASSWORD]),
+            str(data[CONF_COUNTRY_CODE]),
+            profile,
+        )
+
+    async def _login(self) -> None:
+        """Create an authenticated client for this account."""
+        client = await self._new_client()
+        _LOGGER.debug("NeoLight: starting cloud authentication.")
+        if self.entry.data.get(CONF_LOGIN_METHOD) == "phone":
+            await client.login_phone()
+        else:
+            await client.login_email()
+        self.client = client
+        _LOGGER.debug("NeoLight: cloud authentication returned a session.")
+
+    async def _fetch_snapshot(self) -> dict[str, Any]:
+        """Fetch homes and devices using the active authenticated session."""
+        assert self.client is not None
+        _LOGGER.debug("NeoLight: requesting account homes.")
+        homes_raw = await self.client.get_homes()
+        _LOGGER.debug("NeoLight: cloud returned %d home records.", len(homes_raw))
+        devices_by_home: dict[str, list[Any]] = {}
+        for home in homes_raw:
+            if not isinstance(home, dict):
+                continue
+            home_id = home.get("groupId") or home.get("gid") or home.get("homeId")
+            if home_id is not None:
+                try:
+                    devices_by_home[str(home_id)] = await self.client.get_devices(str(home_id))
+                    _LOGGER.debug(
+                        "NeoLight: cloud returned %d devices for one home.",
+                        len(devices_by_home[str(home_id)]),
+                    )
+                except NeoLightAuthError:
+                    # An expired session must escape so the caller can re-login.
+                    raise
+                except NeoLightApiError:
+                    # A transient failure for one home should not mark every
+                    # device sensor unavailable; retain other homes' results.
+                    _LOGGER.warning(
+                        "Could not refresh device list for one NeoLight home."
+                    )
+                    devices_by_home[str(home_id)] = []
+        return normalize_snapshot(homes_raw, devices_by_home)
+
+    async def _async_update_data(self) -> dict[str, Any]:
+        """Fetch a fresh snapshot, re-authenticating once if the session expired."""
+        phase = "login"
+        try:
+            if self.client is None or not self.client.session_id:
+                initial_session = self.entry.data.get("_initial_cloud_session")
+                if isinstance(initial_session, dict):
+                    self.client = await self._new_client()
+                    self.client.restore_session(initial_session)
+                    _LOGGER.debug("NeoLight: reusing the session established during config flow.")
+                else:
+                    await self._login()
+            phase = "fetching homes/devices"
+            try:
+                return await self._fetch_snapshot()
+            except NeoLightAuthError:
+                _LOGGER.warning("NeoLight session was rejected while fetching data; logging in again.")
+                phase = "re-authentication"
+                await self._login()
+                phase = "fetching homes/devices after re-authentication"
+                return await self._fetch_snapshot()
+        except NeoLightApiError as err:
+            _LOGGER.error("NeoLight failed during %s: %s", phase, err)
+            raise UpdateFailed(f"Unable to refresh NeoLight cloud data during {phase}: {err}") from err
+        except (KeyError, OSError, ValueError) as err:
+            raise UpdateFailed("NeoLight configuration or local mobile profile is invalid.") from err
 
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
@@ -17,17 +137,28 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Set up discovered NeoLight device snapshot entities."""
-    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {
-        "homes": entry.data.get("homes", []),
-        "devices": entry.data.get("devices", []),
-    }
+    """Set up the cloud coordinator and its live diagnostic entities."""
+    coordinator = NeoLightCloudCoordinator(hass, entry)
+    try:
+        await coordinator.async_config_entry_first_refresh()
+    except Exception as err:
+        # Do not expose exception details; requests may include account-related data.
+        raise ConfigEntryNotReady("Could not initialize the NeoLight cloud session.") from err
+
+    # The session is transferred only to avoid an immediate duplicate login
+    # during setup. Do not persist the short-lived token after it is in memory.
+    if "_initial_cloud_session" in entry.data:
+        cleaned_data = dict(entry.data)
+        cleaned_data.pop("_initial_cloud_session", None)
+        hass.config_entries.async_update_entry(entry, data=cleaned_data)
+
+    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Unload platforms and clear cached discovery data."""
+    """Unload platforms and release cached coordinator data."""
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unload_ok:
         hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)

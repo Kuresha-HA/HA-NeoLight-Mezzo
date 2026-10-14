@@ -2,11 +2,11 @@
 
 Custom Home Assistant integration research for the NeoLight MEZZO HD WF video intercom.
 
-## Current status — experimental 0.3.7
+## Current status — experimental 0.3.8
 
 The official NeoLight 1.1.0 APK uses a ThingSmart/ThingClips-derived mobile cloud API. The repository now contains an initial implementation of the mobile request signer, enhanced email/password login, and discovery of homes/devices.
 
-**The corrected request format has not yet been live-validated against the NeoLight account.** The last cloud response was `ILLEGAL_CLIENT_ID`; static analysis found that the previous implementation omitted `chKey`, used the wrong postData transport/encryption, and used an unverified embedded key. Version 0.3.6 corrects those protocol details, but only a live login can confirm cloud acceptance. The account may also require an email MFA challenge, which the current config flow reports but does not yet complete.
+**Live login and device discovery have now succeeded on a real NeoLight account.** A follow-up fix transfers the just-created cloud session from the config flow to integration setup to avoid an immediate second login. The transfer fix is covered by offline tests; it still needs confirmation in a Home Assistant installation after update.
 
 ### Local signing profile required
 
@@ -39,12 +39,12 @@ Copy the corrected output to `custom_components/neolight_mezzo/mobile_profile.js
 - Home/group and device-list discovery actions based on the ThingClips mobile API.
 - The wire TTID uses the SDK's `sdk_international@<app_key>` format and the wire channel is `oem`.
 - Offline tests for `chKey`, master-key assembly, ET=3 encryption, RSA password encryption, and request formatting.
-- Diagnostic sensors that snapshot discovered device count and online state at setup.
+- Diagnostic sensors for discovered device count and device online state; cloud metadata is polled every five minutes.
 - Passwords are entered only in Home Assistant config flow; API payloads and credentials are not logged.
 
 ## Not implemented yet
 
-- Refreshing the login session and periodically updating discovery entities.
+- Automatic re-authentication after session expiry is attempted once. A fresh MFA challenge during background refresh still requires further work.
 - Door unlock, live video, and two-way audio.
 
 The SDK's generic remote-unlock workflow has been researched but must not be invoked until authentication and the exact device/lock mapping are verified.

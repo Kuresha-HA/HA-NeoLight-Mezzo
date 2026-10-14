@@ -342,7 +342,7 @@ class NeoLightMobileApi:
             raise NeoLightApiError("Cloud response did not contain a result object.")
         return result
 
-    async def login_email(self) -> None:
+    async def login_email(self, mfa_code: str = "") -> None:
         """Authenticate with the NeoLight account using the ThingClips ticket flow."""
         token_result = await self._request(
             "thing.m.user.username.token.get",
@@ -373,7 +373,7 @@ class NeoLightMobileApi:
                 "email": self._username,
                 "passwd": encrypted_password,
                 "ifencrypt": 1,
-                "options": '{"group": 1,"mfaCode": ""}',
+                "options": json.dumps({"group": 1, "mfaCode": mfa_code}, separators=(",", ":")),
                 "token": token,
             },
             version="3.0",
@@ -381,6 +381,10 @@ class NeoLightMobileApi:
         )
         if not isinstance(login_result, dict) or not login_result.get("sid"):
             raise NeoLightAuthError("Cloud login did not return a session.")
+        self._apply_login_session(login_result)
+
+    def _apply_login_session(self, login_result: dict[str, Any]) -> None:
+        """Store session parameters and honor the API host returned by the cloud."""
         self._sid = str(login_result["sid"])
         if login_result.get("ecode"):
             self._ecode = str(login_result["ecode"])
@@ -390,7 +394,7 @@ class NeoLightMobileApi:
             if host.startswith("https://"):
                 self._endpoint = host if host.endswith("/api.json") else host + "/api.json"
 
-    async def login_phone(self) -> None:
+    async def login_phone(self, mfa_code: str = "") -> None:
         """Attempt the mobile-number login variant of the ThingClips ticket flow."""
         token_result = await self._request(
             "thing.m.user.username.token.get",
@@ -421,7 +425,7 @@ class NeoLightMobileApi:
                 "mobile": self._username,
                 "passwd": encrypted_password,
                 "ifencrypt": 1,
-                "options": '{"group": 1,"mfaCode": ""}',
+                "options": json.dumps({"group": 1, "mfaCode": mfa_code}, separators=(",", ":")),
                 "token": token,
             },
             version="3.0",
@@ -429,9 +433,7 @@ class NeoLightMobileApi:
         )
         if not isinstance(login_result, dict) or not login_result.get("sid"):
             raise NeoLightAuthError("Phone login did not return a session.")
-        self._sid = str(login_result["sid"])
-        if login_result.get("ecode"):
-            self._ecode = str(login_result["ecode"])
+        self._apply_login_session(login_result)
 
     async def get_homes(self) -> list[Any]:
         """Return homes/groups visible to the signed-in NeoLight account."""
@@ -459,6 +461,25 @@ class NeoLightMobileApi:
         if not isinstance(result, list):
             raise NeoLightApiError("Unexpected device-list response.")
         return result
+
+    def export_session(self) -> dict[str, str]:
+        """Export short-lived session metadata for handoff from config flow to setup."""
+        if not self._sid:
+            raise NeoLightAuthError("Cannot export an unauthenticated cloud session.")
+        data = {"sid": self._sid, "endpoint": self._endpoint}
+        if self._ecode:
+            data["ecode"] = self._ecode
+        return data
+
+    def restore_session(self, session: dict[str, str]) -> None:
+        """Restore a session established moments earlier by the config flow."""
+        sid = session.get("sid")
+        endpoint = session.get("endpoint")
+        if not sid or not endpoint or not endpoint.startswith("https://"):
+            raise NeoLightAuthError("The saved NeoLight cloud session is invalid.")
+        self._sid = sid
+        self._ecode = session.get("ecode")
+        self._endpoint = endpoint
 
     @property
     def session_id(self) -> str | None:
