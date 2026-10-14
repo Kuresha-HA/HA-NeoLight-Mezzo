@@ -50,30 +50,35 @@ class NeoLightCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.entry = entry
         self.client: NeoLightMobileApi | None = None
 
-    def _new_client(self) -> NeoLightMobileApi:
-        """Build a client from this config entry and the local app profile."""
+    async def _new_client(self) -> NeoLightMobileApi:
+        """Build a client without blocking Home Assistant's event loop on disk I/O."""
         data = self.entry.data
+        profile = await self.hass.async_add_executor_job(load_profile)
         return NeoLightMobileApi(
             async_get_clientsession(self.hass),
             str(data[CONF_USERNAME]),
             str(data[CONF_PASSWORD]),
             str(data[CONF_COUNTRY_CODE]),
-            load_profile(),
+            profile,
         )
 
     async def _login(self) -> None:
         """Create an authenticated client for this account."""
-        client = self._new_client()
+        client = await self._new_client()
+        _LOGGER.debug("NeoLight: starting cloud authentication.")
         if self.entry.data.get(CONF_LOGIN_METHOD) == "phone":
             await client.login_phone()
         else:
             await client.login_email()
         self.client = client
+        _LOGGER.debug("NeoLight: cloud authentication returned a session.")
 
     async def _fetch_snapshot(self) -> dict[str, Any]:
         """Fetch homes and devices using the active authenticated session."""
         assert self.client is not None
+        _LOGGER.debug("NeoLight: requesting account homes.")
         homes_raw = await self.client.get_homes()
+        _LOGGER.debug("NeoLight: cloud returned %d home records.", len(homes_raw))
         devices_by_home: dict[str, list[Any]] = {}
         for home in homes_raw:
             if not isinstance(home, dict):
@@ -82,6 +87,10 @@ class NeoLightCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if home_id is not None:
                 try:
                     devices_by_home[str(home_id)] = await self.client.get_devices(str(home_id))
+                    _LOGGER.debug(
+                        "NeoLight: cloud returned %d devices for one home.",
+                        len(devices_by_home[str(home_id)]),
+                    )
                 except NeoLightAuthError:
                     # An expired session must escape so the caller can re-login.
                     raise
@@ -96,16 +105,22 @@ class NeoLightCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch a fresh snapshot, re-authenticating once if the session expired."""
+        phase = "login"
         try:
             if self.client is None or not self.client.session_id:
                 await self._login()
+            phase = "fetching homes/devices"
             try:
                 return await self._fetch_snapshot()
             except NeoLightAuthError:
+                _LOGGER.warning("NeoLight session was rejected while fetching data; logging in again.")
+                phase = "re-authentication"
                 await self._login()
+                phase = "fetching homes/devices after re-authentication"
                 return await self._fetch_snapshot()
         except NeoLightApiError as err:
-            raise UpdateFailed(f"Unable to refresh NeoLight cloud data: {err}") from err
+            _LOGGER.error("NeoLight failed during %s: %s", phase, err)
+            raise UpdateFailed(f"Unable to refresh NeoLight cloud data during {phase}: {err}") from err
         except (KeyError, OSError, ValueError) as err:
             raise UpdateFailed("NeoLight configuration or local mobile profile is invalid.") from err
 
