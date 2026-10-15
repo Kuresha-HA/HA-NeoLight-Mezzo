@@ -34,6 +34,12 @@ async def async_setup_entry(
                 continue
             known_device_ids.add(device_id)
             entities.append(NeoLightDeviceOnlineSensor(coordinator, entry, device))
+            if device.get("dps"):
+                entities.extend(
+                    NeoLightDataPointSensor(coordinator, entry, device, dp_id)
+                    for dp_id in ("136", "148", "154", "185", "231", "232", "239", "240", "241", "242")
+                    if dp_id in device["dps"]
+                )
         return entities
 
     async_add_entities(
@@ -115,3 +121,82 @@ class NeoLightDeviceOnlineSensor(
             if str(device.get("id")) == self._device_id:
                 return "online" if device.get("online") else "offline"
         return "unknown"
+
+
+_DP_NAMES = {
+    "136": "Doorbell event",
+    "148": "Accessory lock state",
+    "154": "Doorbell snapshot data",
+    "185": "Alarm message data",
+    "231": "Video channel configuration",
+    "232": "Lock 2 state",
+    "239": "Doorbell 1 call status",
+    "240": "Doorbell 2 call status",
+    "241": "Door 1 unlock DP state",
+    "242": "Door 2 unlock DP state",
+}
+
+
+class NeoLightDataPointSensor(
+    CoordinatorEntity[NeoLightCloudCoordinator], SensorEntity
+):
+    """Expose a read-only snapshot of one documented product Data Point."""
+
+    _attr_has_entity_name = True
+
+    def __init__(
+        self,
+        coordinator: NeoLightCloudCoordinator,
+        entry: ConfigEntry,
+        device: dict[str, Any],
+        dp_id: str,
+    ) -> None:
+        super().__init__(coordinator)
+        self._device_id = str(device["id"])
+        self._dp_id = dp_id
+        self._attr_unique_id = f"{entry.entry_id}_{self._device_id}_dp_{dp_id}"
+        self._attr_name = _DP_NAMES.get(dp_id, f"Data Point {dp_id}")
+        self._attr_icon = "mdi:door" if dp_id in {"136", "239", "240"} else "mdi:information-outline"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, self._device_id)},
+            name=str(device.get("name") or "NeoLight device"),
+            manufacturer="NeoLight",
+            model=str(device.get("product_id") or "Tuya-connected device"),
+            via_device=(DOMAIN, entry.entry_id),
+        )
+
+    @property
+    def native_value(self) -> str | None:
+        """Return the latest DP value as a safe string state."""
+        for device in self.coordinator.data.get("devices", []):
+            if str(device.get("id")) != self._device_id:
+                continue
+            value = (device.get("dps") or {}).get(self._dp_id)
+            if value is None:
+                return None
+            if isinstance(value, (dict, list)):
+                import json
+                return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+            if isinstance(value, bool):
+                return "true" if value else "false"
+            return str(value)
+        return None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Include the DP ID and, for channel metadata, decoded channel options."""
+        attrs: dict[str, Any] = {"dp_id": int(self._dp_id)}
+        for device in self.coordinator.data.get("devices", []):
+            if str(device.get("id")) != self._device_id:
+                continue
+            value = (device.get("dps") or {}).get(self._dp_id)
+            if self._dp_id == "231" and isinstance(value, str):
+                import json
+                try:
+                    decoded = json.loads(value)
+                    attrs["channels"] = decoded.get("chs", [])
+                    attrs["channel_config"] = decoded
+                except (ValueError, TypeError):
+                    pass
+            break
+        return attrs
