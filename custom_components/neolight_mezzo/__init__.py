@@ -47,7 +47,7 @@ def _append_diagnostic_log(path: str, message: str) -> None:
         stream.write(f"{datetime.now(timezone.utc).isoformat()} {message[:4000]}\n")
 
 
-_SECRET_KEY_PARTS = ("localkey", "sid", "password", "passwd", "token", "secret", "authorization", "privatekey", "sign")
+_SECRET_KEY_PARTS = ("localkey", "sid", "password", "passwd", "token", "secret", "authorization", "privatekey", "authkey", "credential", "psk", "sign")
 
 
 def _sanitize_diag_value(value: Any, key: str = "") -> Any:
@@ -99,6 +99,7 @@ class NeoLightCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.client: NeoLightMobileApi | None = None
         self._diagnostic_path = hass.config.path("NeoLite.log")
         self._bound_locks_probed: set[str] = set()
+        self._schema_probed: set[str] = set()
 
     async def _diag(self, message: str) -> None:
         """Write sanitized diagnostic events to /config/NeoLite.log."""
@@ -167,6 +168,17 @@ class NeoLightCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                                     )
                                 except NeoLightApiError as lock_err:
                                     await self._diag(f"BOUND_LOCKS_PROBE_FAILED index={idx} error={type(lock_err).__name__} detail={str(lock_err)[:300]}")
+                            if device_id is not None and str(device_id) not in self._schema_probed:
+                                self._schema_probed.add(str(device_id))
+                                product_id = str(raw_dev.get("productId") or "")
+                                schema_probe = await self.client.get_product_schema(str(device_id), product_id)
+                                await self._diag(
+                                    f"SCHEMA_PROBE index={idx} data={json.dumps(_sanitize_diag_value(schema_probe), ensure_ascii=False, separators=(',', ':'))[:3500]}"
+                                )
+                                ipc_probe = await self.client.get_ipc_config(str(device_id))
+                                await self._diag(
+                                    f"IPC_CONFIG_PROBE index={idx} data={json.dumps(_sanitize_diag_value(ipc_probe), ensure_ascii=False, separators=(',', ':'))[:3500]}"
+                                )
                     _LOGGER.debug(
                         "NeoLight: cloud returned %d devices for one home.",
                         len(devices_by_home[str(home_id)]),
