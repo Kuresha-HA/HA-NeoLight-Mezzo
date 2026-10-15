@@ -224,6 +224,7 @@ class NeoLightMobileApi:
         self._endpoint = endpoint
         self._sid: str | None = None
         self._ecode: str | None = None
+        self._login_summary: dict[str, Any] = {}
         self._device_id = _random_device_id()
         self._master_key = _master_key_g(profile)
         self._ch_key = _ch_key(profile)
@@ -399,6 +400,17 @@ class NeoLightMobileApi:
         if login_result.get("ecode"):
             self._ecode = str(login_result["ecode"])
         domain = login_result.get("domain")
+        self._login_summary = {
+            "login_keys": sorted(str(key) for key in login_result.keys()),
+            "domain": {
+                str(key): str(value)[:300]
+                for key, value in domain.items()
+                if isinstance(value, (str, int, float, bool))
+                and any(term in str(key).casefold() for term in ("url", "host", "region", "mqtt"))
+            } if isinstance(domain, dict) else None,
+            "partnerIdentity": login_result.get("partnerIdentity"),
+            "regionCode": login_result.get("regionCode"),
+        }
         if isinstance(domain, dict) and domain.get("mobileApiUrl"):
             host = str(domain["mobileApiUrl"]).rstrip("/")
             if host.startswith("https://"):
@@ -472,11 +484,11 @@ class NeoLightMobileApi:
             raise NeoLightApiError("Unexpected device-list response.")
         return result
 
-    def export_session(self) -> dict[str, str]:
-        """Export short-lived session metadata for handoff from config flow to setup."""
+    def export_session(self) -> dict[str, Any]:
+        """Export session metadata for handoff from config flow to setup."""
         if not self._sid:
             raise NeoLightAuthError("Cannot export an unauthenticated cloud session.")
-        data = {"sid": self._sid, "endpoint": self._endpoint}
+        data: dict[str, Any] = {"sid": self._sid, "endpoint": self._endpoint, "login_summary": self._login_summary}
         if self._ecode:
             data["ecode"] = self._ecode
         return data
@@ -490,6 +502,22 @@ class NeoLightMobileApi:
         self._sid = sid
         self._ecode = session.get("ecode")
         self._endpoint = endpoint
+        summary = session.get("login_summary")
+        self._login_summary = summary if isinstance(summary, dict) else {}
+
+    @property
+    def endpoint_host(self) -> str:
+        """Return the configured API endpoint for safe diagnostics."""
+        return self._endpoint
+
+    @property
+    def login_summary(self) -> dict[str, Any]:
+        """Return sanitized metadata from the last login response."""
+        return self._login_summary
+
+    async def get_bound_locks(self, device_id: str) -> Any:
+        """Probe the mobile API for locks bound to a device (diagnostic only)."""
+        return await self._request("thing.m.device.bound.lock.list", {"devId": device_id}, version="1.0")
 
     @property
     def session_id(self) -> str | None:
