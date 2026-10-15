@@ -517,7 +517,7 @@ class NeoLightMobileApi:
 
     async def get_bound_locks(self, device_id: str) -> Any:
         """Probe the mobile API for locks bound to a device (diagnostic only)."""
-        return await self._request("thing.m.device.bound.lock.list", {"devId": device_id}, version="1.0")
+        return await self._request("thing.m.device.bound.lock.list", {"srcDevId": device_id}, version="1.0")
 
     @property
     def session_id(self) -> str | None:
