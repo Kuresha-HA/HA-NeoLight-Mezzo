@@ -50,15 +50,17 @@ def _append_diagnostic_log(path: str, message: str) -> None:
 _SECRET_KEY_PARTS = (
     "localkey", "sid", "password", "passwd", "token", "secret",
     "authorization", "privatekey", "authkey", "credential", "psk",
-    "signkey", "signingkey",
+    "signkey", "signingkey", "aeskey", "icepassword", "sessionid",
+    "traceid",
 )
+_SECRET_KEY_NAMES = {"auth", "key", "sign", "signature"}
 
 
 def _sanitize_diag_value(value: Any, key: str = "") -> Any:
     """Redact credentials while preserving useful device/DP structure."""
     lowered = key.casefold().replace("_", "")
     if (
-        lowered == "sign"
+        lowered in _SECRET_KEY_NAMES
         or lowered.endswith("signature")
         or any(part.replace("_", "") in lowered for part in _SECRET_KEY_PARTS)
     ):
@@ -70,7 +72,9 @@ def _sanitize_diag_value(value: Any, key: str = "") -> Any:
     if isinstance(value, list):
         return [_sanitize_diag_value(item) for item in value]
     if isinstance(value, str):
-        return value[:1000]
+        # Preserve long schema JSON strings; the caller chunks the serialized
+        # result into bounded log records after sanitization.
+        return value
     if value is None or isinstance(value, (bool, int, float)):
         return value
     return type(value).__name__
