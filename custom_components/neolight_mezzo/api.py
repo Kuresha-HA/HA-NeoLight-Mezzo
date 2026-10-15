@@ -560,6 +560,60 @@ class NeoLightMobileApi:
                 "detail": str(err)[:240],
             }
 
+    async def get_device_cache_dp(self, device_id: str) -> dict[str, Any]:
+        """Probe cached device DPs without issuing any write command."""
+        action = "thing.m.device.cache.dp.get"
+        try:
+            result = await self._request(
+                action, {"devId": device_id}, version="1.0", ecode=self._ecode
+            )
+            return {"action": action, "version": "1.0", "result": result}
+        except NeoLightAuthError:
+            raise
+        except NeoLightApiError as err:
+            return {
+                "action": action,
+                "version": "1.0",
+                "error": type(err).__name__,
+                "detail": str(err)[:240],
+            }
+
+    async def get_ipc_device_ability(self, device_id: str) -> dict[str, Any]:
+        """Probe read-only IPC capability metadata."""
+        action = "thing.m.ipc.device.ability.get"
+        try:
+            result = await self._request(
+                action, {"devId": device_id}, version="1.0", ecode=self._ecode
+            )
+            return {"action": action, "version": "1.0", "result": result}
+        except NeoLightAuthError:
+            raise
+        except NeoLightApiError as err:
+            return {
+                "action": action,
+                "version": "1.0",
+                "error": type(err).__name__,
+                "detail": str(err)[:240],
+            }
+
+    async def get_rtc_config(self, device_id: str) -> dict[str, Any]:
+        """Probe RTC configuration metadata; support and parameters are unverified."""
+        action = "thing.m.rtc.config.get"
+        try:
+            result = await self._request(
+                action, {"devId": device_id}, version="1.0", ecode=self._ecode
+            )
+            return {"action": action, "version": "1.0", "result": result}
+        except NeoLightAuthError:
+            raise
+        except NeoLightApiError as err:
+            return {
+                "action": action,
+                "version": "1.0",
+                "error": type(err).__name__,
+                "detail": str(err)[:240],
+            }
+
     async def get_ipc_stream_probes(self, device_id: str) -> dict[str, Any]:
         """Probe candidate stream URL actions without assuming RTSP/HLS support."""
         probes = (
