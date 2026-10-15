@@ -98,6 +98,7 @@ class NeoLightCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.entry = entry
         self.client: NeoLightMobileApi | None = None
         self._diagnostic_path = hass.config.path("NeoLite.log")
+        self._bound_locks_probed: set[str] = set()
 
     async def _diag(self, message: str) -> None:
         """Write sanitized diagnostic events to /config/NeoLite.log."""
@@ -154,7 +155,8 @@ class NeoLightCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         if isinstance(raw_dev, dict):
                             await self._diag(f"DEVICE_DETAIL index={idx} data={_summarize_device_for_diag(raw_dev)}")
                             device_id = raw_dev.get("devId") or raw_dev.get("id")
-                            if device_id is not None:
+                            if device_id is not None and str(device_id) not in self._bound_locks_probed:
+                                self._bound_locks_probed.add(str(device_id))
                                 try:
                                     lock_result = await self.client.get_bound_locks(str(device_id))
                                     await self._diag(
