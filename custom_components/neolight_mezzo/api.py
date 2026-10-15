@@ -328,7 +328,7 @@ class NeoLightMobileApi:
                 raise NeoLightAuthError("The account identifier or password was rejected.")
             if code == "MFA_NEED_SEND_CODE":
                 raise NeoLightMFAError("NeoLight cloud requires an email verification code.")
-            raise NeoLightApiError(f"Cloud request failed ({code}): {message}")
+            raise NeoLightApiError(f"Cloud request failed for action {params.get('a')} ({code}): {message}")
 
         if "success" not in payload and isinstance(payload.get("result"), str):
             payload = _decrypt_et3_result(
