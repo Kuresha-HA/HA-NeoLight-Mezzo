@@ -522,35 +522,27 @@ class NeoLightMobileApi:
     async def get_product_schema(
         self, device_id: str, product_id: str, home_id: str
     ) -> dict[str, Any]:
-        """Probe read-only device/product metadata endpoints; action support is unverified."""
-        probes = (
-            (
-                "thing.m.device.ref.info.my.list",
-                "1.0",
-                {"productIds": [product_id]} if product_id else {},
-            ),
-            (
-                "m.life.my.group.device.relation.get",
-                "1.0",
-                {"gid": home_id, "devId": device_id},
-            ),
-            (
-                "thing.m.device.sub.detail.get",
-                "1.0",
-                {"devId": device_id, "meshId": device_id},
-            ),
-            ("m.life.device.upgrade.info", "1.0", {"devId": device_id}),
-        )
-        results: dict[str, Any] = {"product_id": product_id, "probes": {}}
-        for action, version, body in probes:
-            key = f"{action}@{version}"
-            try:
-                results["probes"][key] = await self._request(
-                    action, body or None, version=version, ecode=self._ecode
-                )
-            except NeoLightApiError as err:
-                results["probes"][key] = {"error": type(err).__name__, "detail": str(err)[:240]}
-        return results
+        """Fetch the confirmed read-only product schema endpoint."""
+        action = "thing.m.device.ref.info.my.list"
+        body = {"productIds": [product_id]} if product_id else {}
+        try:
+            result = await self._request(
+                action, body or None, version="1.0", ecode=self._ecode
+            )
+            return {
+                "product_id": product_id,
+                "action": action,
+                "version": "1.0",
+                "result": result,
+            }
+        except NeoLightApiError as err:
+            return {
+                "product_id": product_id,
+                "action": action,
+                "version": "1.0",
+                "error": type(err).__name__,
+                "detail": str(err)[:240],
+            }
 
     async def get_ipc_config(self, device_id: str) -> dict[str, Any]:
         """Probe the candidate IPC configuration endpoint; support is unverified."""
@@ -567,6 +559,44 @@ class NeoLightMobileApi:
                 "error": type(err).__name__,
                 "detail": str(err)[:240],
             }
+
+    async def get_ipc_stream_probes(self, device_id: str) -> dict[str, Any]:
+        """Probe candidate stream URL actions without assuming RTSP/HLS support."""
+        probes = (
+            (
+                "thing.m.ipc.stream.url.get",
+                "1.0",
+                {"devId": device_id, "type": "rtsp"},
+            ),
+            (
+                "thing.m.ipc.stream.url.get",
+                "1.0",
+                {"devId": device_id, "type": "hls"},
+            ),
+            (
+                "m.ipc.Values.get",
+                "1.0",
+                {"devId": device_id},
+            ),
+            (
+                "thing.m.ipc.Live.stream.get",
+                "1.0",
+                {"devId": device_id},
+            ),
+        )
+        results: dict[str, Any] = {"probes": {}}
+        for action, version, body in probes:
+            key = f"{action}@{version}:{body.get('type', 'default')}"
+            try:
+                results["probes"][key] = await self._request(
+                    action, body, version=version, ecode=self._ecode
+                )
+            except NeoLightApiError as err:
+                results["probes"][key] = {
+                    "error": type(err).__name__,
+                    "detail": str(err)[:240],
+                }
+        return results
 
     @property
     def session_id(self) -> str | None:
