@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
+import json
 import logging
 from pathlib import Path
 from datetime import datetime, timezone
@@ -43,7 +44,44 @@ def _append_diagnostic_log(path: str, message: str) -> None:
     log_path = Path(path)
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with log_path.open("a", encoding="utf-8") as stream:
-        stream.write(f"{datetime.now(timezone.utc).isoformat()} {message[:500]}\\n")
+        stream.write(f"{datetime.now(timezone.utc).isoformat()} {message[:4000]}\n")
+
+
+_SECRET_KEY_PARTS = ("localkey", "sid", "password", "passwd", "token", "secret", "authorization", "privatekey", "sign")
+
+
+def _sanitize_diag_value(value: Any, key: str = "") -> Any:
+    """Redact credentials while preserving useful device/DP structure."""
+    lowered = key.casefold().replace("_", "")
+    if any(part.replace("_", "") in lowered for part in _SECRET_KEY_PARTS):
+        if "localkey" in lowered:
+            return {"present": bool(value), "length": len(str(value)) if value else 0}
+        return "[REDACTED]"
+    if isinstance(value, dict):
+        return {str(k): _sanitize_diag_value(v, str(k)) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_sanitize_diag_value(item) for item in value]
+    if isinstance(value, str):
+        return value[:1000]
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    return type(value).__name__
+
+
+def _summarize_device_for_diag(dev: dict[str, Any]) -> str:
+    """Serialize the raw device record with secrets redacted and DP values retained."""
+    record = _sanitize_diag_value(dev)
+    # Add parsed views of commonly serialized SDK metadata for easier inspection.
+    for key in ("skills", "meta", "schema", "dpCodes", "standSchemaModel"):
+        raw = dev.get(key)
+        if isinstance(raw, str) and raw:
+            try:
+                record[f"{key}_parsed"] = _sanitize_diag_value(json.loads(raw), key)
+            except (ValueError, TypeError):
+                record[f"{key}_parse"] = "not_json"
+    if isinstance(dev.get("localKey"), str):
+        record["localKey"] = {"present": True, "length": len(dev["localKey"])}
+    return json.dumps(record, ensure_ascii=False, separators=(",", ":"))[:3500]
 
 
 class NeoLightCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
@@ -109,10 +147,21 @@ class NeoLightCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             home_id = home.get("groupId") or home.get("gid") or home.get("homeId")
             if home_id is not None:
                 try:
-                    devices_by_home[str(home_id)] = await self.client.get_devices(str(home_id))
-                    await self._diag(
-                        f"DEVICES_SUCCESS home_id_present=true count={len(devices_by_home[str(home_id)])}"
-                    )
+                    raw_devices = await self.client.get_devices(str(home_id))
+                    devices_by_home[str(home_id)] = raw_devices
+                    await self._diag(f"DEVICES_SUCCESS home_id_present=true count={len(raw_devices)}")
+                    for idx, raw_dev in enumerate(raw_devices):
+                        if isinstance(raw_dev, dict):
+                            await self._diag(f"DEVICE_DETAIL index={idx} data={_summarize_device_for_diag(raw_dev)}")
+                            device_id = raw_dev.get("devId") or raw_dev.get("id")
+                            if device_id is not None:
+                                try:
+                                    lock_result = await self.client.get_bound_locks(str(device_id))
+                                    await self._diag(
+                                        f"BOUND_LOCKS_RESULT index={idx} type={type(lock_result).__name__} data={json.dumps(_sanitize_diag_value(lock_result), ensure_ascii=False, separators=(',', ':'))[:3000]}"
+                                    )
+                                except NeoLightApiError as lock_err:
+                                    await self._diag(f"BOUND_LOCKS_PROBE_FAILED index={idx} error={type(lock_err).__name__} detail={str(lock_err)[:300]}")
                     _LOGGER.debug(
                         "NeoLight: cloud returned %d devices for one home.",
                         len(devices_by_home[str(home_id)]),
@@ -139,6 +188,9 @@ class NeoLightCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 if isinstance(initial_session, dict):
                     self.client = await self._new_client()
                     self.client.restore_session(initial_session)
+                    await self._diag(
+                        f"SESSION_INFO endpoint={self.client.endpoint_host} meta={json.dumps(self.client.login_summary, ensure_ascii=False, separators=(',', ':'))[:2500]}"
+                    )
                     _LOGGER.debug("NeoLight: reusing the session established during config flow.")
                 else:
                     await self._login()
