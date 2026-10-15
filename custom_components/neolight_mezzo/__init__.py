@@ -227,6 +227,19 @@ class NeoLightCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                                 await self._diag_json_chunks("IPC_CONFIG_PROBE", idx, ipc_probe)
                                 stream_probe = await self.client.get_ipc_stream_probes(str(device_id))
                                 await self._diag_json_chunks("IPC_STREAM_PROBE", idx, stream_probe)
+
+                                cache_dp_probe = await self.client.get_device_cache_dp(str(device_id))
+                                await self._diag_json_chunks(
+                                    "DEVICE_CACHE_DP_PROBE", idx, cache_dp_probe
+                                )
+                                ability_probe = await self.client.get_ipc_device_ability(str(device_id))
+                                await self._diag_json_chunks(
+                                    "IPC_ABILITY_PROBE", idx, ability_probe
+                                )
+                                rtc_probe = await self.client.get_rtc_config(str(device_id))
+                                await self._diag_json_chunks(
+                                    "RTC_CONFIG_PROBE", idx, rtc_probe
+                                )
                     _LOGGER.debug(
                         "NeoLight: cloud returned %d devices for one home.",
                         len(devices_by_home[str(home_id)]),
