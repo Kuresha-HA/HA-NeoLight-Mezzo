@@ -318,6 +318,12 @@ class NeoLightMobileApi:
         if payload.get("success") is False:
             code = str(payload.get("errorCode", "UNKNOWN"))
             message = str(payload.get("errorMsg", "Cloud request failed"))
+            # Sanitized diagnostics only: never log credentials, tokens, signatures,
+            # encrypted payloads, or response result fields.
+            _LOGGER.warning(
+                "NeoLight API rejected action=%s version=%s code=%s message=%s",
+                params.get("a"), version, code, message[:240],
+            )
             if code in {"USER_PASSWD_WRONG", "USER_NOT_EXIST", "USER_ACCOUNT_NOT_EXIST"}:
                 raise NeoLightAuthError("The account identifier or password was rejected.")
             if code == "MFA_NEED_SEND_CODE":
@@ -333,6 +339,10 @@ class NeoLightMobileApi:
             )
         if payload.get("success") is not True:
             code = str(payload.get("errorCode", "UNKNOWN"))
+            _LOGGER.warning(
+                "NeoLight API returned unsuccessful response action=%s version=%s code=%s",
+                params.get("a"), version, code,
+            )
             if code == "MFA_NEED_SEND_CODE":
                 raise NeoLightMFAError("NeoLight cloud requires an email verification code.")
             raise NeoLightApiError(f"Cloud request failed ({code}).")
