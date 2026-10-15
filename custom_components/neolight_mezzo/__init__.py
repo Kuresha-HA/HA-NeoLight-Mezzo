@@ -81,7 +81,7 @@ def _summarize_device_for_diag(dev: dict[str, Any]) -> str:
                 record[f"{key}_parse"] = "not_json"
     if isinstance(dev.get("localKey"), str):
         record["localKey"] = {"present": True, "length": len(dev["localKey"])}
-    return json.dumps(record, ensure_ascii=False, separators=(",", ":"))[:3500]
+    return json.dumps(record, ensure_ascii=False, separators=(",", ":"))
 
 
 class NeoLightCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
@@ -153,7 +153,10 @@ class NeoLightCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     await self._diag(f"DEVICES_SUCCESS home_id_present=true count={len(raw_devices)}")
                     for idx, raw_dev in enumerate(raw_devices):
                         if isinstance(raw_dev, dict):
-                            await self._diag(f"DEVICE_DETAIL index={idx} data={_summarize_device_for_diag(raw_dev)}")
+                            detail = _summarize_device_for_diag(raw_dev)
+                            chunks = [detail[pos:pos + 3000] for pos in range(0, len(detail), 3000)] or ["{}"]
+                            for part, chunk in enumerate(chunks, start=1):
+                                await self._diag(f"DEVICE_DETAIL index={idx} part={part}/{len(chunks)} data={chunk}")
                             device_id = raw_dev.get("devId") or raw_dev.get("id")
                             if device_id is not None and str(device_id) not in self._bound_locks_probed:
                                 self._bound_locks_probed.add(str(device_id))
