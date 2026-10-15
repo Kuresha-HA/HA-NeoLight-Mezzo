@@ -8,6 +8,7 @@ import logging
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
@@ -72,6 +73,27 @@ def _sanitize_diag_value(value: Any, key: str = "") -> Any:
     if isinstance(value, list):
         return [_sanitize_diag_value(item) for item in value]
     if isinstance(value, str):
+        # Parse nested SDK JSON before chunking so schema strings are not clipped
+        # and their individual fields still pass through secret redaction.
+        if lowered in {"schema", "schemaext", "skill", "skills"} and value.startswith(("[", "{")):
+            try:
+                return _sanitize_diag_value(json.loads(value), "")
+            except (ValueError, TypeError):
+                pass
+        # URLs may contain one-time stream/session tokens in query parameters.
+        if value.startswith(("rtsp://", "rtsps://", "http://", "https://")):
+            try:
+                parsed = urlsplit(value)
+                if parsed.scheme and parsed.hostname:
+                    host = parsed.hostname
+                    if parsed.port:
+                        host = f"{host}:{parsed.port}"
+                    safe_query = urlencode(
+                        [(name, "[REDACTED]") for name, _ in parse_qsl(parsed.query, keep_blank_values=True)]
+                    )
+                    return urlunsplit((parsed.scheme, host, parsed.path, safe_query, ""))
+            except ValueError:
+                return "[REDACTED_URL]"
         # Preserve long schema JSON strings; the caller chunks the serialized
         # result into bounded log records after sanitization.
         return value
@@ -203,6 +225,8 @@ class NeoLightCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                                 await self._diag_json_chunks("SCHEMA_PROBE", idx, schema_probe)
                                 ipc_probe = await self.client.get_ipc_config(str(device_id))
                                 await self._diag_json_chunks("IPC_CONFIG_PROBE", idx, ipc_probe)
+                                stream_probe = await self.client.get_ipc_stream_probes(str(device_id))
+                                await self._diag_json_chunks("IPC_STREAM_PROBE", idx, stream_probe)
                     _LOGGER.debug(
                         "NeoLight: cloud returned %d devices for one home.",
                         len(devices_by_home[str(home_id)]),
