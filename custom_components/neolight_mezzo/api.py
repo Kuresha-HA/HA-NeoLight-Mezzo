@@ -519,11 +519,26 @@ class NeoLightMobileApi:
         """Probe the mobile API for locks bound to a device (diagnostic only)."""
         return await self._request("thing.m.device.bound.lock.list", {"srcDevId": device_id}, version="1.0")
 
-    async def get_product_schema(self, device_id: str, product_id: str) -> dict[str, Any]:
+    async def get_product_schema(
+        self, device_id: str, product_id: str, home_id: str
+    ) -> dict[str, Any]:
         """Probe read-only device/product metadata endpoints; action support is unverified."""
         probes = (
-            ("thing.m.device.ref.info.my.list", "1.0", {}),
-            ("thing.m.device.sub.detail.get", "1.0", {"devId": device_id, "meshId": device_id}),
+            (
+                "thing.m.device.ref.info.my.list",
+                "1.0",
+                {"productIds": [product_id]} if product_id else {},
+            ),
+            (
+                "m.life.my.group.device.relation.get",
+                "1.0",
+                {"gid": home_id, "devId": device_id},
+            ),
+            (
+                "thing.m.device.sub.detail.get",
+                "1.0",
+                {"devId": device_id, "meshId": device_id},
+            ),
             ("m.life.device.upgrade.info", "1.0", {"devId": device_id}),
         )
         results: dict[str, Any] = {"product_id": product_id, "probes": {}}
