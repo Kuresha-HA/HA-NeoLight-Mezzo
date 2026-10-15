@@ -162,7 +162,6 @@ class NeoLightDataPointSensor(
             name=str(device.get("name") or "NeoLight device"),
             manufacturer="NeoLight",
             model=str(device.get("product_id") or "Tuya-connected device"),
-            via_device=(DOMAIN, entry.entry_id),
         )
 
     @property
