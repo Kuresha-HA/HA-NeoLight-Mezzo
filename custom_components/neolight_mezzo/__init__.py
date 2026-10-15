@@ -47,13 +47,21 @@ def _append_diagnostic_log(path: str, message: str) -> None:
         stream.write(f"{datetime.now(timezone.utc).isoformat()} {message[:4000]}\n")
 
 
-_SECRET_KEY_PARTS = ("localkey", "sid", "password", "passwd", "token", "secret", "authorization", "privatekey", "authkey", "credential", "psk", "sign")
+_SECRET_KEY_PARTS = (
+    "localkey", "sid", "password", "passwd", "token", "secret",
+    "authorization", "privatekey", "authkey", "credential", "psk",
+    "signkey", "signingkey",
+)
 
 
 def _sanitize_diag_value(value: Any, key: str = "") -> Any:
     """Redact credentials while preserving useful device/DP structure."""
     lowered = key.casefold().replace("_", "")
-    if any(part.replace("_", "") in lowered for part in _SECRET_KEY_PARTS):
+    if (
+        lowered == "sign"
+        or lowered.endswith("signature")
+        or any(part.replace("_", "") in lowered for part in _SECRET_KEY_PARTS)
+    ):
         if "localkey" in lowered:
             return {"present": bool(value), "length": len(str(value)) if value else 0}
         return "[REDACTED]"
@@ -109,6 +117,20 @@ class NeoLightCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
         except OSError:
             _LOGGER.exception("Could not write NeoLight diagnostic log.")
+
+    async def _diag_json_chunks(self, event: str, index: int, value: Any) -> None:
+        """Log complete sanitized JSON payloads in bounded, reassemblable chunks."""
+        serialized = json.dumps(
+            _sanitize_diag_value(value), ensure_ascii=False, separators=(",", ":")
+        )
+        chunks = [
+            serialized[pos:pos + 3000]
+            for pos in range(0, len(serialized), 3000)
+        ] or ["{}"]
+        for part, chunk in enumerate(chunks, start=1):
+            await self._diag(
+                f"{event} index={index} part={part}/{len(chunks)} data={chunk}"
+            )
 
     async def _new_client(self) -> NeoLightMobileApi:
         """Build a client without blocking Home Assistant's event loop on disk I/O."""
@@ -171,14 +193,12 @@ class NeoLightCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                             if device_id is not None and str(device_id) not in self._schema_probed:
                                 self._schema_probed.add(str(device_id))
                                 product_id = str(raw_dev.get("productId") or "")
-                                schema_probe = await self.client.get_product_schema(str(device_id), product_id)
-                                await self._diag(
-                                    f"SCHEMA_PROBE index={idx} data={json.dumps(_sanitize_diag_value(schema_probe), ensure_ascii=False, separators=(',', ':'))[:3500]}"
+                                schema_probe = await self.client.get_product_schema(
+                                    str(device_id), product_id, str(home_id)
                                 )
+                                await self._diag_json_chunks("SCHEMA_PROBE", idx, schema_probe)
                                 ipc_probe = await self.client.get_ipc_config(str(device_id))
-                                await self._diag(
-                                    f"IPC_CONFIG_PROBE index={idx} data={json.dumps(_sanitize_diag_value(ipc_probe), ensure_ascii=False, separators=(',', ':'))[:3500]}"
-                                )
+                                await self._diag_json_chunks("IPC_CONFIG_PROBE", idx, ipc_probe)
                     _LOGGER.debug(
                         "NeoLight: cloud returned %d devices for one home.",
                         len(devices_by_home[str(home_id)]),
