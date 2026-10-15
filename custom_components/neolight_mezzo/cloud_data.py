@@ -47,7 +47,11 @@ def normalize_snapshot(
             devices.append({
                 "id": device_id,
                 "name": str(device.get("name") or "NeoLight device"),
-                "online": _as_bool(device.get("isOnline", False)),
+                "online": _as_bool(
+                    device.get("isOnline")
+                    if "isOnline" in device
+                    else device.get("cloudOnline", False)
+                ),
                 "product_id": str(device.get("productId") or ""),
                 "category": str(device.get("category") or ""),
                 "home_id": home_id,
