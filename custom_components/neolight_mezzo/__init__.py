@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from datetime import timedelta
 import logging
+from pathlib import Path
+from datetime import datetime, timezone
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
@@ -36,6 +38,14 @@ PLATFORMS: list[Platform] = [Platform.SENSOR]
 UPDATE_INTERVAL = timedelta(minutes=5)
 
 
+def _append_diagnostic_log(path: str, message: str) -> None:
+    """Append a single sanitized diagnostic line without blocking the event loop."""
+    log_path = Path(path)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("a", encoding="utf-8") as stream:
+        stream.write(f"{datetime.now(timezone.utc).isoformat()} {message[:500]}\\n")
+
+
 class NeoLightCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     """Poll current home/device metadata from the NeoLight cloud."""
 
@@ -49,6 +59,16 @@ class NeoLightCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         self.entry = entry
         self.client: NeoLightMobileApi | None = None
+        self._diagnostic_path = hass.config.path("NeoLite.log")
+
+    async def _diag(self, message: str) -> None:
+        """Write sanitized diagnostic events to /config/NeoLite.log."""
+        try:
+            await self.hass.async_add_executor_job(
+                _append_diagnostic_log, self._diagnostic_path, message
+            )
+        except OSError:
+            _LOGGER.exception("Could not write NeoLight diagnostic log.")
 
     async def _new_client(self) -> NeoLightMobileApi:
         """Build a client without blocking Home Assistant's event loop on disk I/O."""
@@ -65,12 +85,14 @@ class NeoLightCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def _login(self) -> None:
         """Create an authenticated client for this account."""
         client = await self._new_client()
+        await self._diag(f"AUTH_START method={self.entry.data.get(CONF_LOGIN_METHOD, 'email')}")
         _LOGGER.debug("NeoLight: starting cloud authentication.")
         if self.entry.data.get(CONF_LOGIN_METHOD) == "phone":
             await client.login_phone()
         else:
             await client.login_email()
         self.client = client
+        await self._diag("AUTH_SUCCESS session_received=true")
         _LOGGER.debug("NeoLight: cloud authentication returned a session.")
 
     async def _fetch_snapshot(self) -> dict[str, Any]:
@@ -78,6 +100,7 @@ class NeoLightCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         assert self.client is not None
         _LOGGER.debug("NeoLight: requesting account homes.")
         homes_raw = await self.client.get_homes()
+        await self._diag(f"HOMES_SUCCESS count={len(homes_raw)}")
         _LOGGER.debug("NeoLight: cloud returned %d home records.", len(homes_raw))
         devices_by_home: dict[str, list[Any]] = {}
         for home in homes_raw:
@@ -87,6 +110,9 @@ class NeoLightCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if home_id is not None:
                 try:
                     devices_by_home[str(home_id)] = await self.client.get_devices(str(home_id))
+                    await self._diag(
+                        f"DEVICES_SUCCESS home_id_present=true count={len(devices_by_home[str(home_id)])}"
+                    )
                     _LOGGER.debug(
                         "NeoLight: cloud returned %d devices for one home.",
                         len(devices_by_home[str(home_id)]),
@@ -97,6 +123,7 @@ class NeoLightCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 except NeoLightApiError:
                     # A transient failure for one home should not mark every
                     # device sensor unavailable; retain other homes' results.
+                    await self._diag("DEVICES_FAILED error=NeoLightApiError")
                     _LOGGER.warning(
                         "Could not refresh device list for one NeoLight home."
                     )
@@ -119,15 +146,18 @@ class NeoLightCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             try:
                 return await self._fetch_snapshot()
             except NeoLightAuthError:
+                await self._diag("SESSION_REJECTED retrying_auth=true")
                 _LOGGER.warning("NeoLight session was rejected while fetching data; logging in again.")
                 phase = "re-authentication"
                 await self._login()
                 phase = "fetching homes/devices after re-authentication"
                 return await self._fetch_snapshot()
         except NeoLightApiError as err:
+            await self._diag(f"FAILED phase={phase} exception={type(err).__name__} detail={str(err)[:240]}")
             _LOGGER.error("NeoLight failed during %s: %s", phase, err)
             raise UpdateFailed(f"Unable to refresh NeoLight cloud data during {phase}: {err}") from err
         except (KeyError, OSError, ValueError) as err:
+            await self._diag(f"FAILED phase={phase} exception={type(err).__name__}")
             raise UpdateFailed("NeoLight configuration or local mobile profile is invalid.") from err
 
 
@@ -139,9 +169,11 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up the cloud coordinator and its live diagnostic entities."""
     coordinator = NeoLightCloudCoordinator(hass, entry)
+    await coordinator._diag("SETUP_START integration_version=0.3.8")
     try:
         await coordinator.async_config_entry_first_refresh()
     except Exception as err:
+        await coordinator._diag(f"SETUP_FAILED exception={type(err).__name__}")
         # Do not expose exception details; requests may include account-related data.
         raise ConfigEntryNotReady("Could not initialize the NeoLight cloud session.") from err
 
