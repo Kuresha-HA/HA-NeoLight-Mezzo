@@ -286,7 +286,7 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up the cloud coordinator and its live diagnostic entities."""
     coordinator = NeoLightCloudCoordinator(hass, entry)
-    await coordinator._diag("SETUP_START integration_version=0.3.8")
+    await coordinator._diag("SETUP_START integration_version=0.3.9")
     try:
         await coordinator.async_config_entry_first_refresh()
     except Exception as err:
