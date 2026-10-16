@@ -50,6 +50,9 @@ def test_normalize_snapshot_keeps_only_safe_home_and_device_metadata():
                 "product_id": "product-1",
                 "category": "doorbell",
                 "home_id": "123",
+                "dps": {},
+                "dps_time": {},
+                "dp_max_time": None,
             }
         ],
     }
