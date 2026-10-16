@@ -44,6 +44,11 @@ def normalize_snapshot(
             if device_id in seen_devices:
                 continue
             seen_devices.add(device_id)
+            dp_info = device.get("dataPointInfo")
+            dp_info = dp_info if isinstance(dp_info, dict) else {}
+            raw_dps = dp_info.get("dps")
+            raw_dps_time = dp_info.get("dpsTime")
+            raw_max_time = dp_info.get("dpMaxTime")
             devices.append({
                 "id": device_id,
                 "name": str(device.get("name") or "NeoLight device"),
