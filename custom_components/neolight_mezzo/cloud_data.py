@@ -55,18 +55,29 @@ def normalize_snapshot(
                 "product_id": str(device.get("productId") or ""),
                 "category": str(device.get("category") or ""),
                 "home_id": home_id,
-                # Keep only the current DP snapshot; never copy localKey/session data.
+                # Keep only DP values and timestamps; never copy localKey/session data.
                 "dps": (
-                    dict(
-                        (str(key), value)
-                        for key, value in (
-                            (device.get("dataPointInfo") or {}).get("dps", {})
-                        ).items()
+                    {
+                        str(key): value
+                        for key, value in raw_dps.items()
                         if isinstance(value, (str, int, float, bool)) or value is None
-                    )
-                    if isinstance(device.get("dataPointInfo"), dict)
-                    and isinstance((device.get("dataPointInfo") or {}).get("dps"), dict)
+                    }
+                    if isinstance(raw_dps, dict)
                     else {}
+                ),
+                "dps_time": (
+                    {
+                        str(key): int(value)
+                        for key, value in raw_dps_time.items()
+                        if isinstance(value, (int, float))
+                    }
+                    if isinstance(raw_dps_time, dict)
+                    else {}
+                ),
+                "dp_max_time": (
+                    int(raw_max_time)
+                    if isinstance(raw_max_time, (int, float))
+                    else None
                 ),
             })
     return {"homes": homes, "devices": devices}
