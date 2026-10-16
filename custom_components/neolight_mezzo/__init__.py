@@ -52,7 +52,7 @@ _SECRET_KEY_PARTS = (
     "localkey", "sid", "password", "passwd", "token", "secret",
     "authorization", "privatekey", "authkey", "credential", "psk",
     "signkey", "signingkey", "aeskey", "icepassword", "sessionid",
-    "traceid",
+    "traceid", "attachpic", "encryptkey",
 )
 _SECRET_KEY_NAMES = {"auth", "key", "sign", "signature"}
 
@@ -227,6 +227,8 @@ class NeoLightCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                                 await self._diag_json_chunks("IPC_CONFIG_PROBE", idx, ipc_probe)
                                 stream_probe = await self.client.get_ipc_stream_probes(str(device_id))
                                 await self._diag_json_chunks("IPC_STREAM_PROBE", idx, stream_probe)
+                                msg_list_probe = await self.client.get_message_list()
+                                await self._diag_json_chunks("MSG_LIST_PROBE", idx, msg_list_probe)
                     _LOGGER.debug(
                         "NeoLight: cloud returned %d devices for one home.",
                         len(devices_by_home[str(home_id)]),
