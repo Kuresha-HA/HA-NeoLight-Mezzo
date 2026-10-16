@@ -598,6 +598,25 @@ class NeoLightMobileApi:
                 }
         return results
 
+    async def get_message_list(self, limit: int = 20, offset: int = 0) -> dict[str, Any]:
+        """Probe the read-only message center list for doorbell/alarm events."""
+        action = "thing.m.msg.list.by.json"
+        body = {"offset": offset, "limit": limit}
+        try:
+            result = await self._request(
+                action, body, version="1.0", ecode=self._ecode
+            )
+            return {"action": action, "version": "1.0", "result": result}
+        except NeoLightAuthError:
+            raise
+        except NeoLightApiError as err:
+            return {
+                "action": action,
+                "version": "1.0",
+                "error": type(err).__name__,
+                "detail": str(err)[:240],
+            }
+
     @property
     def session_id(self) -> str | None:
         """Return the current session ID for the active config flow."""
