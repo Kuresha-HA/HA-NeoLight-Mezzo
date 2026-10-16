@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+import json
 import re
 from typing import Any
 
-from homeassistant.components.sensor import SensorEntity
+from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceInfo
@@ -15,6 +17,27 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import NeoLightCloudCoordinator
 from .const import DOMAIN
+
+
+def _ms_to_datetime(ms: int | None) -> datetime | None:
+    """Convert a millisecond Unix timestamp to a timezone-aware UTC datetime."""
+    if not isinstance(ms, int) or ms <= 0:
+        return None
+    try:
+        return datetime.fromtimestamp(ms / 1000.0, tz=timezone.utc)
+    except (OSError, OverflowError, ValueError):
+        return None
+
+
+def _device_info_for(device: dict[str, Any]) -> DeviceInfo:
+    """Build a consistent DeviceInfo so all entities attach to the same device."""
+    device_id = str(device["id"])
+    return DeviceInfo(
+        identifiers={(DOMAIN, device_id)},
+        name=str(device.get("name") or "NeoLight device"),
+        manufacturer="NeoLight",
+        model=str(device.get("product_id") or "Tuya-connected device"),
+    )
 
 
 async def async_setup_entry(
@@ -34,12 +57,15 @@ async def async_setup_entry(
                 continue
             known_device_ids.add(device_id)
             entities.append(NeoLightDeviceOnlineSensor(coordinator, entry, device))
-            if device.get("dps"):
-                entities.extend(
-                    NeoLightDataPointSensor(coordinator, entry, device, dp_id)
-                    for dp_id in ("136", "148", "154", "185", "231", "232", "239", "240", "241", "242")
-                    if dp_id in device["dps"]
-                )
+            entities.append(NeoLightDeviceLastActivitySensor(coordinator, entry, device))
+            present_dps = set((device.get("dps") or {}).keys()) | set(
+                (device.get("dps_time") or {}).keys()
+            )
+            entities.extend(
+                NeoLightDataPointSensor(coordinator, entry, device, dp_id)
+                for dp_id in ("136", "148", "154", "185", "231", "232", "239", "240", "241", "242")
+                if dp_id in present_dps
+            )
         return entities
 
     async_add_entities(
@@ -100,14 +126,8 @@ class NeoLightDeviceOnlineSensor(
         self._device_id = str(device["id"])
         slug = re.sub(r"[^a-zA-Z0-9_]+", "_", self._device_id)
         self._attr_unique_id = f"{entry.entry_id}_{slug}_online"
-        self._attr_name = f"{device.get('name') or 'Device'} online"
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, self._device_id)},
-            name=str(device.get("name") or "NeoLight device"),
-            manufacturer="NeoLight",
-            model=str(device.get("product_id") or "Tuya-connected device"),
-            via_device=(DOMAIN, entry.entry_id),
-        )
+        self._attr_name = "Online"
+        self._attr_device_info = _device_info_for(device)
         self._attr_extra_state_attributes = {
             "product_id": device.get("product_id") or None,
             "category": device.get("category") or None,
@@ -121,6 +141,49 @@ class NeoLightDeviceOnlineSensor(
             if str(device.get("id")) == self._device_id:
                 return "online" if device.get("online") else "offline"
         return "unknown"
+
+
+class NeoLightDeviceLastActivitySensor(
+    CoordinatorEntity[NeoLightCloudCoordinator], SensorEntity
+):
+    """Latest dpMaxTime reported by the cloud for this device."""
+
+    _attr_has_entity_name = True
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+    _attr_name = "Last DP activity"
+    _attr_icon = "mdi:clock-check-outline"
+
+    def __init__(
+        self,
+        coordinator: NeoLightCloudCoordinator,
+        entry: ConfigEntry,
+        device: dict[str, Any],
+    ) -> None:
+        super().__init__(coordinator)
+        self._device_id = str(device["id"])
+        slug = re.sub(r"[^a-zA-Z0-9_]+", "_", self._device_id)
+        self._attr_unique_id = f"{entry.entry_id}_{slug}_dp_max_time"
+        self._attr_device_info = _device_info_for(device)
+
+    @property
+    def native_value(self) -> datetime | None:
+        """Return dpMaxTime as a UTC datetime."""
+        for device in self.coordinator.data.get("devices", []):
+            if str(device.get("id")) == self._device_id:
+                return _ms_to_datetime(device.get("dp_max_time"))
+        return None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Expose raw millisecond timestamps for all DPs."""
+        for device in self.coordinator.data.get("devices", []):
+            if str(device.get("id")) == self._device_id:
+                return {
+                    "dp_max_time_ms": device.get("dp_max_time"),
+                    "dps_time_ms": device.get("dps_time") or {},
+                }
+        return {}
 
 
 _DP_NAMES = {
@@ -156,7 +219,7 @@ class NeoLightDataPointSensor(
         self._dp_id = dp_id
         self._attr_unique_id = f"{entry.entry_id}_{self._device_id}_dp_{dp_id}"
         self._attr_name = _DP_NAMES.get(dp_id, f"Data Point {dp_id}")
-        self._attr_icon = "mdi:door" if dp_id in {"136", "239", "240"} else "mdi:information-outline"
+        self._attr_icon = "mdi:door" if dp_id in {"136", "154", "185", "239", "240"} else "mdi:information-outline"
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, self._device_id)},
             name=str(device.get("name") or "NeoLight device"),
@@ -171,11 +234,15 @@ class NeoLightDataPointSensor(
         for device in self.coordinator.data.get("devices", []):
             if str(device.get("id")) != self._device_id:
                 continue
-            value = (device.get("dps") or {}).get(self._dp_id)
+            dps = device.get("dps") or {}
+            dps_time = device.get("dps_time") or {}
+            if self._dp_id not in dps:
+                dt = _ms_to_datetime(dps_time.get(self._dp_id))
+                return dt.isoformat() if dt else None
+            value = dps.get(self._dp_id)
             if value is None:
                 return None
             if isinstance(value, (dict, list)):
-                import json
                 return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
             if isinstance(value, bool):
                 return "true" if value else "false"
@@ -189,9 +256,15 @@ class NeoLightDataPointSensor(
         for device in self.coordinator.data.get("devices", []):
             if str(device.get("id")) != self._device_id:
                 continue
+            dps_time = device.get("dps_time") or {}
+            ts_ms = dps_time.get(self._dp_id)
+            if isinstance(ts_ms, int):
+                attrs["dp_time_ms"] = ts_ms
+                dt = _ms_to_datetime(ts_ms)
+                if dt is not None:
+                    attrs["dp_time_utc"] = dt.isoformat()
             value = (device.get("dps") or {}).get(self._dp_id)
             if self._dp_id == "231" and isinstance(value, str):
-                import json
                 try:
                     decoded = json.loads(value)
                     attrs["channels"] = decoded.get("chs", [])
