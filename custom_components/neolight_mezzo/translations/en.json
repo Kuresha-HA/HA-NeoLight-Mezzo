@@ -1,0 +1,40 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect NeoLight account",
+        "description": "Log in with your NeoLight / Tuya mobile app credentials.",
+        "data": {
+          "login_method": "Login method",
+          "username": "Email address or phone number (without country code)",
+          "password": "Password",
+          "country_code": "Country"
+        },
+        "options": {
+          "login_method": {
+            "email": "Email address",
+            "phone": "Phone number"
+          }
+        }
+      },
+      "mfa": {
+        "title": "Verify NeoLight login",
+        "description": "Enter the verification code sent by NeoLight to {account}.",
+        "data": {
+          "mfa_code": "Email verification code"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "The account identifier or password was rejected.",
+      "cannot_connect": "Could not complete the cloud request. Check your internet connection or credentials.",
+      "profile_missing": "The mobile signing profile is missing or invalid.",
+      "mfa_required": "The NeoLight cloud requires an email verification code.",
+      "unknown": "Unexpected error. Check the Home Assistant log for details.",
+      "mfa_invalid": "The verification code was rejected. Check the code and try again."
+    },
+    "abort": {
+      "already_configured": "This account is already configured."
+    }
+  }
+}

@@ -8,7 +8,7 @@
           "login_method": "Login method",
           "username": "Email address or phone number (without country code)",
           "password": "Password",
-          "country_code": "Account country calling code (for Ukraine, 380)"
+          "country_code": "Country"
         },
         "options": {
           "login_method": {

@@ -8,6 +8,10 @@ from typing import Any
 import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.selector import (
+    CountrySelector,
+    CountrySelectorConfig,
+)
 
 from .api import (
     NeoLightApiError,
@@ -24,6 +28,7 @@ from .const import (
     CONF_PASSWORD,
     CONF_USERNAME,
     DOMAIN,
+    country_to_calling_code,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -38,10 +43,12 @@ class NeoLightConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Validate account credentials and discover the account's devices."""
         errors: dict[str, str] = {}
         if user_input is not None:
+            raw_country = user_input.get(CONF_COUNTRY_CODE, "UA")
+            calling_code = country_to_calling_code(str(raw_country))
             values = {
                 CONF_USERNAME: user_input[CONF_USERNAME].strip(),
                 CONF_PASSWORD: user_input[CONF_PASSWORD],
-                CONF_COUNTRY_CODE: user_input[CONF_COUNTRY_CODE].strip(),
+                CONF_COUNTRY_CODE: calling_code,
                 CONF_LOGIN_METHOD: user_input[CONF_LOGIN_METHOD],
             }
             return await self._async_attempt_login(values)
@@ -156,7 +163,9 @@ class NeoLightConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     vol.Required(CONF_LOGIN_METHOD, default="email"): vol.In(["email", "phone"]),
                     vol.Required(CONF_USERNAME): str,
                     vol.Required(CONF_PASSWORD): str,
-                    vol.Required(CONF_COUNTRY_CODE, default="380"): str,
+                    vol.Required(CONF_COUNTRY_CODE, default="UA"): CountrySelector(
+                        CountrySelectorConfig()
+                    ),
                 }
             ),
             errors=errors,
