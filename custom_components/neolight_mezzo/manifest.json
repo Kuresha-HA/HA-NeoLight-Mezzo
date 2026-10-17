@@ -7,7 +7,9 @@
   "iot_class": "cloud_polling",
   "integration_type": "hub",
   "requirements": [
-    "cryptography>=42.0.0"
+    "cryptography>=42.0.0",
+    "aiomqtt>=2.0.0",
+    "paho-mqtt>=2.0.0"
   ],
-  "version": "0.3.9"
+  "version": "0.4.0"
 }

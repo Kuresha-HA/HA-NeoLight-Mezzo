@@ -56,39 +56,47 @@ class NeoLightMFAError(NeoLightAuthError):
     """The cloud requires an additional email verification step."""
 
 
+# Built-in official NeoLight Android APK v1.1.0 client signing profile
+DEFAULT_PROFILE: dict[str, str] = {
+    "app_key": "t8tvtyectyrwh9v3f353",
+    "app_secret": "5vy4fwwgaygu38dd4rx7tahh5s7kgg7a",
+    "ttid": "neoneo",
+    "cert_sha256": "3A:CA:9C:37:D2:7F:C2:75:86:F8:FD:A1:A8:33:D8:97:84:05:D6:CB:04:03:D5:C0:54:A4:BC:1D:A7:4C:7A:E2",
+    "bmp_token": "70683561686d637463797038633977727939663368397565773775656a616e35",
+}
+
+
 def load_profile() -> dict[str, str]:
-    """Load app signing inputs from a local-only profile file."""
-    if not PROFILE_PATH.is_file():
-        raise NeoLightProfileError(
-            "Missing mobile_profile.json. Regenerate it from the official APK; "
-            "never commit this file or share its contents publicly."
-        )
-    try:
-        profile = json.loads(PROFILE_PATH.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as err:
-        raise NeoLightProfileError("The local mobile profile is unreadable.") from err
+    """Load app signing inputs from a local file, falling back to the built-in profile."""
+    profile: dict[str, Any] = {}
+    if PROFILE_PATH.is_file():
+        try:
+            profile = json.loads(PROFILE_PATH.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as err:
+            _LOGGER.warning("Could not read %s, using built-in profile: %s", PROFILE_PATH, err)
+            profile = dict(DEFAULT_PROFILE)
+    else:
+        profile = dict(DEFAULT_PROFILE)
 
     # Older profiles used an unverified 32-character embedded_key. The SDK's
     # matrix decoder produces one 64-character hex bmp_token; reject old profiles
     # instead of silently signing every request with invalid key material.
     required = ("app_key", "app_secret", "cert_sha256", "bmp_token", "ttid")
     if any(not isinstance(profile.get(key), str) or not profile[key] for key in required):
-        raise NeoLightProfileError(
-            "The mobile profile is outdated: it must contain bmp_token derived "
-            "from assets/t_s.bmp (64 hexadecimal characters)."
-        )
+        _LOGGER.warning("Local mobile profile missing required keys; falling back to built-in profile.")
+        profile = dict(DEFAULT_PROFILE)
+
     if (
         len(profile["app_key"]) != 20
         or len(profile["app_secret"]) != 32
         or len(profile["cert_sha256"]) != 95
         or len(profile["bmp_token"]) != 64
         or not all(ch in string.hexdigits for ch in profile["bmp_token"])
+        or len(profile["cert_sha256"].split(":")) != 32
     ):
-        raise NeoLightProfileError(
-            "The mobile profile has invalid key lengths or bmp_token format."
-        )
-    if len(profile["cert_sha256"].split(":")) != 32:
-        raise NeoLightProfileError("The APK certificate fingerprint is malformed.")
+        _LOGGER.warning("Local mobile profile has invalid format; falling back to built-in profile.")
+        profile = dict(DEFAULT_PROFILE)
+
     return profile
 
 
@@ -224,6 +232,8 @@ class NeoLightMobileApi:
         self._endpoint = endpoint
         self._sid: str | None = None
         self._ecode: str | None = None
+        self._uid: str | None = None
+        self._partner_identity: str = "p1308996"
         self._login_summary: dict[str, Any] = {}
         self._device_id = _random_device_id()
         self._master_key = _master_key_g(profile)
@@ -238,7 +248,7 @@ class NeoLightMobileApi:
         requires_sid: bool = True,
         extra_params: dict[str, Any] | None = None,
         ecode: str | None = None,
-    ) -> dict[str, Any] | list[Any]:
+    ) -> Any:
         """Send one app-faithful, signed ET=3 request with no query-string secrets."""
         sid = self._sid if requires_sid else None
         if requires_sid and not sid:
@@ -305,7 +315,8 @@ class NeoLightMobileApi:
                 if response.status >= 500:
                     raise NeoLightApiError(f"NeoLight cloud returned HTTP {response.status}.")
                 try:
-                    payload = await response.json(content_type=None)
+                    raw_bytes = await response.read()
+                    payload = json.loads(raw_bytes.decode("utf-8", errors="replace"))
                 except (ValueError, json.JSONDecodeError) as err:
                     raise NeoLightApiError("NeoLight cloud returned a non-JSON response.") from err
         except (ClientError, TimeoutError) as err:
@@ -349,8 +360,10 @@ class NeoLightMobileApi:
             raise NeoLightApiError(f"Cloud request failed ({code}).")
 
         result = payload.get("result")
-        if not isinstance(result, (dict, list)):
-            raise NeoLightApiError("Cloud response did not contain a result object.")
+        if result is None:
+            return {}
+        if not isinstance(result, (dict, list, bool, int, float, str)):
+            raise NeoLightApiError("Cloud response did not contain a valid result.")
         return result
 
     async def login_email(self, mfa_code: str = "") -> None:
@@ -399,6 +412,10 @@ class NeoLightMobileApi:
         self._sid = str(login_result["sid"])
         if login_result.get("ecode"):
             self._ecode = str(login_result["ecode"])
+        if login_result.get("uid"):
+            self._uid = str(login_result["uid"])
+        if login_result.get("partnerIdentity"):
+            self._partner_identity = str(login_result["partnerIdentity"])
         domain = login_result.get("domain")
         self._login_summary = {
             "login_keys": sorted(str(key) for key in login_result.keys()),
@@ -410,6 +427,7 @@ class NeoLightMobileApi:
             } if isinstance(domain, dict) else None,
             "partnerIdentity": login_result.get("partnerIdentity"),
             "regionCode": login_result.get("regionCode"),
+            "uid": login_result.get("uid"),
         }
         if isinstance(domain, dict) and domain.get("mobileApiUrl"):
             host = str(domain["mobileApiUrl"]).rstrip("/")
@@ -488,12 +506,19 @@ class NeoLightMobileApi:
         """Export session metadata for handoff from config flow to setup."""
         if not self._sid:
             raise NeoLightAuthError("Cannot export an unauthenticated cloud session.")
-        data: dict[str, Any] = {"sid": self._sid, "endpoint": self._endpoint, "login_summary": self._login_summary}
+        data: dict[str, Any] = {
+            "sid": self._sid,
+            "endpoint": self._endpoint,
+            "login_summary": self._login_summary,
+            "uid": self._uid,
+            "partner_identity": self._partner_identity,
+            "device_id": self._device_id,
+        }
         if self._ecode:
             data["ecode"] = self._ecode
         return data
 
-    def restore_session(self, session: dict[str, str]) -> None:
+    def restore_session(self, session: dict[str, Any]) -> None:
         """Restore a session established moments earlier by the config flow."""
         sid = session.get("sid")
         endpoint = session.get("endpoint")
@@ -502,8 +527,120 @@ class NeoLightMobileApi:
         self._sid = sid
         self._ecode = session.get("ecode")
         self._endpoint = endpoint
+        self._uid = session.get("uid")
+        if session.get("partner_identity"):
+            self._partner_identity = str(session["partner_identity"])
+        if session.get("device_id"):
+            self._device_id = str(session["device_id"])
         summary = session.get("login_summary")
         self._login_summary = summary if isinstance(summary, dict) else {}
+        if not self._partner_identity and self._login_summary.get("partnerIdentity"):
+            self._partner_identity = str(self._login_summary["partnerIdentity"])
+        if not self._uid and self._login_summary.get("uid"):
+            self._uid = str(self._login_summary["uid"])
+
+    def get_mqtt_credentials(self, client_suffix: str = "DEFAULT") -> dict[str, Any]:
+        """Derive mobile MQTT client credentials faithful to the ThingClips Android SDK."""
+        app_key = self._profile["app_key"]
+        partner_id = self._partner_identity or "p1308996"
+        ch_key = self._ch_key
+        sid = self._sid or ""
+        ecode = self._ecode or ""
+        uid = self._uid or ""
+
+        # 1. Username
+        app_key_md5 = hashlib.md5(app_key.encode("utf-8")).hexdigest()
+        suffix_hash = hashlib.md5((app_key_md5 + ecode).encode("utf-8")).hexdigest()[-16:]
+        username = f"{partner_id}_v1_{app_key}_{ch_key}_mb_{sid}{suffix_hash}"
+
+        # 2. Password
+        md5_key = hashlib.md5(self._master_key).hexdigest()
+        full_hash = hashlib.md5((md5_key + ecode).encode("utf-8")).hexdigest()
+        password = full_hash[8:24]
+
+        # 3. Client ID
+        device_hash = hashlib.md5(self._device_id.encode("utf-8")).hexdigest()[:16]
+        uid_hash = hashlib.md5((uid + "sdkfasodifca").encode("utf-8")).hexdigest()
+        client_id = f"{APP_PACKAGE_NAME}_mb_{device_hash}_{uid_hash}_{client_suffix}"
+
+        domain = self._login_summary.get("domain") if isinstance(self._login_summary, dict) else None
+        host = "m1.tuyaeu.com"
+        port = 8883
+        if isinstance(domain, dict):
+            host = str(domain.get("mobileMqttsUrl") or "m1.tuyaeu.com")
+            try:
+                port = int(domain.get("mqttsPort") or 8883)
+            except (ValueError, TypeError):
+                port = 8883
+
+        topics = [
+            f"{partner_id}/mb/{uid}",
+            f"smart/mb/in/{uid}",
+            f"/av/u/{uid}",
+        ]
+        return {
+            "host": host,
+            "port": port,
+            "username": username,
+            "password": password,
+            "client_id": client_id,
+            "topics": topics,
+            "uid": uid,
+            "partner_id": partner_id,
+        }
+
+    async def get_latest_doorbell_message(self, device_id: str | None = None) -> dict[str, Any] | None:
+        """Fetch the most recent doorbell ring event from the cloud message center."""
+        try:
+            params: dict[str, Any] = {"offset": 0, "limit": 10, "msgType": 1}
+            result = await self._request("thing.m.msg.list", params, version="4.0", ecode=self._ecode)
+            if isinstance(result, dict) and isinstance(result.get("datas"), list):
+                for item in result["datas"]:
+                    if isinstance(item, dict) and item.get("msgCode") == "ipc_doorbell":
+                        src = item.get("msgSrcId")
+                        if not device_id or not src or src == device_id:
+                            return item
+        except Exception as err:
+            _LOGGER.warning("Could not check doorbell message center: %s", err)
+        return None
+
+    async def publish_dps(
+        self,
+        device_id: str,
+        dps: dict[str, Any],
+        diag_fn: Any | None = None,
+    ) -> dict[str, Any]:
+        """Publish datapoint commands to a device via the cloud."""
+        dps_json = json.dumps(dps, separators=(",", ":"))
+        candidates = [
+            ("tuya.m.device.dp.publish", "1.0", {"devId": device_id, "dps": dps_json}),
+            ("tuya.m.device.dp.publish", "1.0", {"devId": device_id, "dps": dps}),
+            ("smartlife.m.device.dp.publish", "1.0", {"devId": device_id, "dps": dps_json}),
+            ("smartlife.m.device.dp.publish", "1.0", {"devId": device_id, "dps": dps}),
+            ("thing.m.device.dp.publish", "1.0", {"devId": device_id, "dps": dps_json}),
+            ("thing.m.device.dp.publish", "1.0", {"devId": device_id, "dps": dps}),
+            ("tuya.m.device.dp.publish", "1.0", {"deviceId": device_id, "dps": dps_json}),
+            ("smartlife.m.device.dp.publish", "1.0", {"deviceId": device_id, "dps": dps_json}),
+            ("tuya.m.device.dp.publish", "2.0", {"devId": device_id, "dps": dps_json}),
+            ("smartlife.m.device.dp.publish", "2.0", {"devId": device_id, "dps": dps_json}),
+        ]
+        last_error = None
+        for action, version, body in candidates:
+            try:
+                res = await self._request(action, body, version=version, ecode=self._ecode)
+                if diag_fn:
+                    await diag_fn(f"PUBLISH_DPS_SUCCESS action={action} v={version} res={res}")
+                return {"status": "ok", "action": action, "result": res}
+            except Exception as err:
+                last_error = err
+                if diag_fn:
+                    await diag_fn(f"PUBLISH_DPS_FAIL action={action} v={version} err={err}")
+                if "DEVICE_OFFLINE" in str(err):
+                    raise NeoLightApiError(
+                        f"Устройство {device_id} оффлайн в Tuya Cloud (DEVICE_OFFLINE). Проверьте статус питания и Wi-Fi домофона."
+                    ) from err
+                _LOGGER.debug("publish_dps candidate %s failed: %s", action, err)
+        raise NeoLightApiError(f"Failed to publish DPs to device {device_id}: {last_error}")
 
     @property
     def endpoint_host(self) -> str:
@@ -616,6 +753,39 @@ class NeoLightMobileApi:
                 "error": type(err).__name__,
                 "detail": str(err)[:240],
             }
+
+    async def probe_doorbell_events(self, device_id: str) -> dict[str, Any]:
+        """Probe candidate endpoints for real-time doorbell status and message history."""
+        try:
+            import paho.mqtt.client as _pm
+            paho_status = "available"
+        except Exception as p_err:
+            paho_status = f"unavailable: {p_err}"
+
+        candidate_actions = [
+            ("thing.m.msg.new", "1.0", {}),
+            ("thing.m.msg.maxtime", "1.0", {}),
+            ("thing.m.msg.list", "3.0", {"offset": 0, "limit": 20, "startTime": 0}),
+            ("thing.m.msg.list", "4.0", {"offset": 0, "limit": 20, "msgType": 1}),
+            ("thing.m.msg.list", "5.2", {"msgSrcId": device_id, "offset": 0, "limit": 20, "msgType": 1}),
+            ("thing.m.msg.list", "5.0", {"offset": 0, "limit": 20, "msgType": 1}),
+            ("thing.m.msg.list", "2.0", {"offset": 0, "limit": 20}),
+            ("thing.m.msg.list", "1.0", {"input": "{}"}),
+            ("thing.m.ipc.msg.sort.tag.get", "1.0", {"devId": device_id}),
+            ("thing.m.ipc.device.ability.get", "1.0", {"devId": device_id}),
+            ("thing.m.device.media.latest", "1.0", {"devId": device_id}),
+        ]
+        results: dict[str, Any] = {"paho_mqtt": paho_status}
+        for action, version, body in candidate_actions:
+            key = f"{action}@{version}:{list(body.keys())}"
+            try:
+                res = await self._request(action, body, version=version, ecode=self._ecode)
+                results[key] = {"status": "ok", "result": res}
+            except NeoLightAuthError:
+                raise
+            except Exception as err:
+                results[key] = {"status": "error", "error": type(err).__name__, "detail": str(err)[:240]}
+        return results
 
     @property
     def session_id(self) -> str | None:

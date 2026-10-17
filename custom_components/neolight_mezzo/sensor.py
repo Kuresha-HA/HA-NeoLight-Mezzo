@@ -58,6 +58,7 @@ async def async_setup_entry(
             known_device_ids.add(device_id)
             entities.append(NeoLightDeviceOnlineSensor(coordinator, entry, device))
             entities.append(NeoLightDeviceLastActivitySensor(coordinator, entry, device))
+            entities.append(NeoLightDoorbellLastRingSensor(coordinator, entry, device))
             present_dps = set((device.get("dps") or {}).keys()) | set(
                 (device.get("dps_time") or {}).keys()
             )
@@ -273,3 +274,50 @@ class NeoLightDataPointSensor(
                     pass
             break
         return attrs
+
+
+class NeoLightDoorbellLastRingSensor(
+    CoordinatorEntity[NeoLightCloudCoordinator], SensorEntity
+):
+    """Timestamp sensor for the last time the doorbell was pressed."""
+
+    _attr_has_entity_name = True
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+    _attr_name = "Last doorbell ring"
+    _attr_icon = "mdi:bell-ring-outline"
+
+    def __init__(
+        self,
+        coordinator: NeoLightCloudCoordinator,
+        entry: ConfigEntry,
+        device: dict[str, Any],
+    ) -> None:
+        super().__init__(coordinator)
+        self._device_id = str(device.get("id") or "")
+        self._attr_unique_id = f"{entry.entry_id}_{self._device_id}_last_ring"
+        self._attr_device_info = _device_info_for(device)
+
+    @property
+    def native_value(self) -> datetime | None:
+        """Return the UTC datetime of the last doorbell ring."""
+        ring_state = self.coordinator.get_doorbell_ring_state(self._device_id)
+        ts = ring_state.get("timestamp")
+        if isinstance(ts, int) and ts > 0:
+            try:
+                return datetime.fromtimestamp(ts, tz=timezone.utc)
+            except (OSError, OverflowError, ValueError):
+                pass
+        return None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return message and caller image attributes."""
+        ring_state = self.coordinator.get_doorbell_ring_state(self._device_id)
+        attrs: dict[str, Any] = {
+            "message": ring_state.get("message"),
+            "source": ring_state.get("source"),
+        }
+        if ring_state.get("picture_url"):
+            attrs["caller_photo_url"] = ring_state["picture_url"]
+        return attrs
+

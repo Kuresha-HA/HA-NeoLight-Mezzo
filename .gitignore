@@ -4,3 +4,13 @@ custom_components/neolight_mezzo/mobile_profile.json
 # Local regenerated mobile profiles must never be committed
 custom_components/neolight_mezzo/mobile_profile*.json
 mobile_profile.fixed.json
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Scratch directory
+scratch/
+
+
