@@ -1,48 +1,49 @@
 # NeoLight MEZZO HD WF — Home Assistant
 
-Custom Home Assistant integration research for the NeoLight MEZZO HD WF video intercom.
+**Release notes:** see [CHANGELOG.md](CHANGELOG.md). Changes for each published version should also be listed in the GitHub Release notes so they are visible when Home Assistant/HACS offers an update.
 
-## Version 0.4.0
+Custom Home Assistant integration for the NeoLight MEZZO HD WF video intercom.
 
-Stable integration for NeoLight MEZZO HD WF video intercom with real-time doorbell notifications, caller snapshots, and door/gate unlock controls.
+## Current development release: 0.5.1
 
-### Implemented Features:
+The tested 0.5.1 package includes the following changes:
 
-- **Doorbell Ring Notifications:**
-  - Real-time Tuya MQTT client (`m1.tuyaeu.com:8883`) push listener.
-  - Fast cloud message-center polling fallback (4s interval).
-  - Binary sensor (`binary_sensor.*_doorbell_ringing`) with 30-second auto-reset.
-  - Timestamp sensor (`sensor.*_last_doorbell_ring`) with caller message and photo URL attributes.
-  - Home Assistant event bus firing (`neolight_mezzo_doorbell_ring`).
+- Restored the built-in mobile signing-profile fallback when an optional local `mobile_profile.json` is not present.
+- Added validation for missing or invalid signing-profile fields, with a clearer `NeoLightProfileError`.
+- Aligned sensor device information with the shared device-registry identity.
+- Refreshes MQTT credentials and restarts the MQTT connection after cloud-session re-authentication.
+- Prefetches caller photos when a ring is detected and prevents an older concurrent download from overwriting a newer photo.
+- Removed the unused button platform and the `aiomqtt` dependency; MQTT uses `paho-mqtt`.
+- Removed no-op diagnostic payload serialization and synchronized the reported version with `manifest.json`.
+- Added integration brand artwork: `icon.png`, `icon@2x.png`, `logo.png`, and `logo@2x.png`.
+- Updated installation and troubleshooting documentation.
 
-- **Caller Photo Snapshot:**
-  - Camera entity (`camera.*_caller_photo`) displaying high-resolution caller snapshots from the latest ring event.
-  - Persistent disk caching (`.storage/neolight_mezzo_snapshot.jpg`) and local fallback image.
+> **Publication status:** the repository's default branch and the published HACS release must both be updated before this version appears as an available update in HACS. The integration manifest version alone does not publish a release.
 
-- **Lock & Gate Controls:**
-  - Momentary unlock buttons: `Door 1 unlock` (DP 241), `Door 2 unlock` (DP 242), and `Gate unlock` (DP 148).
-  - Lock entities: `Door 1` and `Door 2` locks with automatic 5-second relocking to secured state.
-  - Direct DP publish error reporting (`DEVICE_OFFLINE`).
+## Features
 
-- **Diagnostic Sensors:**
-  - `Online` status sensor.
-  - `Last DP activity` timestamp sensor.
-  - Raw Data Point sensors for internal firmware registers: `Accessory lock state` (DP 148), `Video channel configuration` (DP 231), `Lock 2 state` (DP 232), `Doorbell 1 call status` (DP 239), `Doorbell 2 call status` (DP 240), `Door 1/2 unlock DP states` (DP 241/242).
+- Cloud account setup using the credentials from the NeoLight/Tuya mobile application.
+- Door and gate unlock controls.
+- Doorbell ringing state and last-ring information.
+- Caller photo camera entity.
+- Diagnostic entities for supported doorbell and device data.
 
-## Install / Setup
+## Install / setup
 
-1. Install the repository via HACS as a custom repository, or copy `custom_components/neolight_mezzo` into your Home Assistant `custom_components/` directory.
-2. The official NeoLight client profile is **already built-in** — no extra files are required to get started. (Optional: an external `mobile_profile.json` can be placed in the integration folder to override credentials if needed).
-3. Restart Home Assistant.
-4. Add **NeoLight MEZZO** from Settings → Devices & services.
-5. Enter your NeoLight app account email, password, and country code (Ukraine: `380`).
-6. Choose the login method. For phone login, enter the phone number without the country calling code, then set the country code separately.
-7. Check the config-flow result and the Home Assistant log. If login fails, provide only the error code/message; do not send passwords, tokens, cookies, or request signatures.
+1. Install through HACS once a versioned GitHub release is published, or copy `custom_components/neolight_mezzo` into Home Assistant's `custom_components/` directory.
+2. Restart Home Assistant.
+3. Add **NeoLight MEZZO** from **Settings → Devices & services → Add integration**.
+4. Sign in using the account credentials configured in the NeoLight/Tuya mobile application.
 
-## Research notes
+## Logging and troubleshooting
 
-- [APK research](docs/APK_RESEARCH.md)
-- [APK deep dive](docs/APK_DEEP_DIVE.md)
-- [Google Play APK verification](docs/GOOGLE_PLAY_APK_VERIFICATION.md)
-- [Tuya mobile API findings](docs/TUYA_MOBILE_API_FINDINGS.md)
-- [Follow-up SDK findings](docs/TUYA_MOBILE_API_FOLLOWUP.md)
+The integration does not create or append to `NeoLite.log`; high-volume diagnostic traces are disabled. Operational warnings and errors remain available in Home Assistant logs.
+
+Open **Settings → System → Logs** and look for `custom_components.neolight_mezzo`. Do not share account passwords, session IDs, tokens, local keys, or other authentication data.
+
+## Notes
+
+- `Door` is the first lock; `Gate` is the gate/second lock. A separate `Door 2` entity is not created.
+- `Caller photo` remains the current/latest caller-photo entity; this release does not add a ten-photo history gallery.
+- The optional local signing profile is `custom_components/neolight_mezzo/mobile_profile.json`. Do not commit private credentials. The example file is `mobile_profile.example.json`.
+- English, Russian, and Ukrainian translations are included under `translations/`.
