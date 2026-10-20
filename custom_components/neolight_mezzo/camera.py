@@ -67,7 +67,7 @@ class NeoLightCallerCamera(CoordinatorEntity[NeoLightCloudCoordinator], Camera):
     """Camera entity showing the high-resolution snapshot of the doorbell caller."""
 
     _attr_has_entity_name = True
-    _attr_name = "Caller photo"
+    _attr_translation_key = "caller_photo"
     _attr_icon = "mdi:camera-front-variant"
     _attr_supported_features = CameraEntityFeature(0)
 
@@ -122,7 +122,7 @@ class NeoLightCallerCamera(CoordinatorEntity[NeoLightCloudCoordinator], Camera):
             async with session.get(pic_url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
                 if resp.status == 200:
                     data = await resp.read()
-                    if data:
+                    if data and (data.startswith(b"\xff\xd8\xff") or data.startswith(b"\x89PNG\r\n\x1a\n")):
                         self._last_loaded_url = pic_url
                         self._last_image_bytes = data
                         self.coordinator.set_cached_snapshot(self._device_id, data)

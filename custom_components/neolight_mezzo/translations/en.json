@@ -1,4 +1,76 @@
 {
+  "title": "NeoLight MEZZO",
+  "entity": {
+    "lock": {
+      "door": {
+        "name": "Door"
+      },
+      "gate": {
+        "name": "Gate"
+      }
+    },
+    "camera": {
+      "caller_photo": {
+        "name": "Caller photo"
+      }
+    },
+    "binary_sensor": {
+      "doorbell_ringing": {
+        "name": "Doorbell ringing"
+      }
+    },
+    "sensor": {
+      "discovered_devices": {
+        "name": "Discovered devices"
+      },
+      "online": {
+        "name": "Online",
+        "state": {
+          "online": "Online",
+          "offline": "Offline"
+        }
+      },
+      "last_dp_activity": {
+        "name": "Last DP activity"
+      },
+      "doorbell_event": {
+        "name": "Doorbell event"
+      },
+      "accessory_lock_state": {
+        "name": "Accessory lock state"
+      },
+      "doorbell_snapshot_data": {
+        "name": "Doorbell snapshot data"
+      },
+      "alarm_message_data": {
+        "name": "Alarm message data"
+      },
+      "video_channel_configuration": {
+        "name": "Video channel configuration"
+      },
+      "lock_2_state": {
+        "name": "Lock 2 state"
+      },
+      "doorbell_1_call_status": {
+        "name": "Doorbell 1 call status"
+      },
+      "doorbell_2_call_status": {
+        "name": "Doorbell 2 call status"
+      },
+      "door_unlock_dp_state": {
+        "name": "Door unlock DP state"
+      },
+      "gate_unlock_dp_state": {
+        "name": "Gate unlock DP state"
+      },
+      "last_doorbell_ring": {
+        "name": "Last doorbell ring"
+      },
+      "data_point": {
+        "name": "Data Point {dp_id}"
+      }
+    }
+  },
   "config": {
     "step": {
       "user": {

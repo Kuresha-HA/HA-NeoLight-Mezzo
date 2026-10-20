@@ -1,4 +1,76 @@
 {
+  "title": "NeoLight MEZZO",
+  "entity": {
+    "lock": {
+      "door": {
+        "name": "Дверь"
+      },
+      "gate": {
+        "name": "Ворота"
+      }
+    },
+    "camera": {
+      "caller_photo": {
+        "name": "Фото посетителя"
+      }
+    },
+    "binary_sensor": {
+      "doorbell_ringing": {
+        "name": "Звонок в дверь"
+      }
+    },
+    "sensor": {
+      "discovered_devices": {
+        "name": "Обнаруженные устройства"
+      },
+      "online": {
+        "name": "Состояние подключения",
+        "state": {
+          "online": "В сети",
+          "offline": "Не в сети"
+        }
+      },
+      "last_dp_activity": {
+        "name": "Последняя активность DP"
+      },
+      "doorbell_event": {
+        "name": "Событие звонка"
+      },
+      "accessory_lock_state": {
+        "name": "Состояние дополнительного замка"
+      },
+      "doorbell_snapshot_data": {
+        "name": "Данные снимка звонка"
+      },
+      "alarm_message_data": {
+        "name": "Данные сообщения тревоги"
+      },
+      "video_channel_configuration": {
+        "name": "Конфигурация видеоканалов"
+      },
+      "lock_2_state": {
+        "name": "Состояние замка 2"
+      },
+      "doorbell_1_call_status": {
+        "name": "Статус вызова звонка 1"
+      },
+      "doorbell_2_call_status": {
+        "name": "Статус вызова звонка 2"
+      },
+      "door_unlock_dp_state": {
+        "name": "Состояние DP отпирания двери"
+      },
+      "gate_unlock_dp_state": {
+        "name": "Состояние DP отпирания ворот"
+      },
+      "last_doorbell_ring": {
+        "name": "Последний звонок"
+      },
+      "data_point": {
+        "name": "Точка данных {dp_id}"
+      }
+    }
+  },
   "config": {
     "step": {
       "user": {

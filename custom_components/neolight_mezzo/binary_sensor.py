@@ -67,7 +67,7 @@ class NeoLightDoorbellRingingSensor(
 
     _attr_has_entity_name = True
     _attr_device_class = BinarySensorDeviceClass.OCCUPANCY
-    _attr_name = "Doorbell ringing"
+    _attr_translation_key = "doorbell_ringing"
 
     @property
     def icon(self) -> str:

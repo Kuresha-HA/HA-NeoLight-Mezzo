@@ -19,7 +19,6 @@ _LOGGER = logging.getLogger(__name__)
 PLATFORMS: list[Platform] = [
     Platform.SENSOR,
     Platform.BINARY_SENSOR,
-    Platform.BUTTON,
     Platform.LOCK,
     Platform.CAMERA,
 ]
@@ -33,13 +32,12 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up the cloud coordinator and its live diagnostic entities."""
     coordinator = NeoLightCloudCoordinator(hass, entry)
-    await coordinator._diag("SETUP_START integration_version=0.4.0")
+    await coordinator._async_init_snapshots()
+    await coordinator._diag("SETUP_START integration_version=0.5.1")
     try:
         await coordinator.async_config_entry_first_refresh()
     except Exception as err:
-        import traceback
-        tb = traceback.format_exc().replace("\n", " -> ")
-        await coordinator._diag(f"SETUP_FAILED exception={type(err).__name__} detail={err!r} tb={tb}")
+        await coordinator._diag(f"SETUP_FAILED exception_type={type(err).__name__}")
         raise ConfigEntryNotReady(f"Could not initialize the NeoLight cloud session: {err}") from err
 
     if "_initial_cloud_session" in entry.data:

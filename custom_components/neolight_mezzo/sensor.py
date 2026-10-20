@@ -34,9 +34,9 @@ def _device_info_for(device: dict[str, Any]) -> DeviceInfo:
     device_id = str(device["id"])
     return DeviceInfo(
         identifiers={(DOMAIN, device_id)},
-        name=str(device.get("name") or "NeoLight device"),
+        name=str(device.get("name") or "NeoLight MEZZO"),
         manufacturer="NeoLight",
-        model=str(device.get("product_id") or "Tuya-connected device"),
+        model=str(device.get("product_id") or "MEZZO"),
     )
 
 
@@ -89,7 +89,7 @@ class NeoLightDeviceCountSensor(CoordinatorEntity[NeoLightCloudCoordinator], Sen
 
     _attr_has_entity_name = True
     _attr_entity_category = EntityCategory.DIAGNOSTIC
-    _attr_name = "Discovered devices"
+    _attr_translation_key = "discovered_devices"
     _attr_icon = "mdi:devices"
 
     def __init__(self, coordinator: NeoLightCloudCoordinator, entry: ConfigEntry) -> None:
@@ -127,7 +127,7 @@ class NeoLightDeviceOnlineSensor(
         self._device_id = str(device["id"])
         slug = re.sub(r"[^a-zA-Z0-9_]+", "_", self._device_id)
         self._attr_unique_id = f"{entry.entry_id}_{slug}_online"
-        self._attr_name = "Online"
+        self._attr_translation_key = "online"
         self._attr_device_info = _device_info_for(device)
         self._attr_extra_state_attributes = {
             "product_id": device.get("product_id") or None,
@@ -152,7 +152,7 @@ class NeoLightDeviceLastActivitySensor(
     _attr_has_entity_name = True
     _attr_entity_category = EntityCategory.DIAGNOSTIC
     _attr_device_class = SensorDeviceClass.TIMESTAMP
-    _attr_name = "Last DP activity"
+    _attr_translation_key = "last_dp_activity"
     _attr_icon = "mdi:clock-check-outline"
 
     def __init__(
@@ -196,8 +196,8 @@ _DP_NAMES = {
     "232": "Lock 2 state",
     "239": "Doorbell 1 call status",
     "240": "Doorbell 2 call status",
-    "241": "Door 1 unlock DP state",
-    "242": "Door 2 unlock DP state",
+    "241": "Door unlock DP state",
+    "242": "Gate unlock DP state",
 }
 
 
@@ -219,15 +219,21 @@ class NeoLightDataPointSensor(
         self._device_id = str(device["id"])
         self._dp_id = dp_id
         self._attr_unique_id = f"{entry.entry_id}_{self._device_id}_dp_{dp_id}"
-        self._attr_name = _DP_NAMES.get(dp_id, f"Data Point {dp_id}")
+        self._attr_translation_key = {
+            "136": "doorbell_event",
+            "148": "accessory_lock_state",
+            "154": "doorbell_snapshot_data",
+            "185": "alarm_message_data",
+            "231": "video_channel_configuration",
+            "232": "lock_2_state",
+            "239": "doorbell_1_call_status",
+            "240": "doorbell_2_call_status",
+            "241": "door_unlock_dp_state",
+            "242": "gate_unlock_dp_state",
+        }.get(dp_id, "data_point")
+        self._attr_translation_placeholders = {"dp_id": dp_id}
         self._attr_icon = "mdi:door" if dp_id in {"136", "154", "185", "239", "240"} else "mdi:information-outline"
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, self._device_id)},
-            name=str(device.get("name") or "NeoLight device"),
-            manufacturer="NeoLight",
-            model=str(device.get("product_id") or "Tuya-connected device"),
-            via_device=(DOMAIN, entry.entry_id),
-        )
+        self._attr_device_info = _device_info_for(device)
 
     @property
     def native_value(self) -> str | None:
@@ -238,8 +244,7 @@ class NeoLightDataPointSensor(
             dps = device.get("dps") or {}
             dps_time = device.get("dps_time") or {}
             if self._dp_id not in dps:
-                dt = _ms_to_datetime(dps_time.get(self._dp_id))
-                return dt.isoformat() if dt else None
+                return None
             value = dps.get(self._dp_id)
             if value is None:
                 return None
@@ -283,7 +288,7 @@ class NeoLightDoorbellLastRingSensor(
 
     _attr_has_entity_name = True
     _attr_device_class = SensorDeviceClass.TIMESTAMP
-    _attr_name = "Last doorbell ring"
+    _attr_translation_key = "last_doorbell_ring"
     _attr_icon = "mdi:bell-ring-outline"
 
     def __init__(

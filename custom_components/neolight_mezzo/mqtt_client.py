@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import ssl
 from typing import Any, Callable
 
@@ -47,14 +48,15 @@ class TuyaMqttClient:
         self._running = True
         try:
             client_id = self._creds.get("client_id", "")
-            self._client = paho_mqtt.Client(client_id=client_id, protocol=paho_mqtt.MQTTv311)
+            client_kwargs: dict[str, Any] = {"client_id": client_id, "protocol": paho_mqtt.MQTTv311}
+            if hasattr(paho_mqtt, "CallbackAPIVersion"):
+                client_kwargs["callback_api_version"] = paho_mqtt.CallbackAPIVersion.VERSION1
+            self._client = paho_mqtt.Client(**client_kwargs)
             self._client.username_pw_set(
                 username=self._creds.get("username", ""),
                 password=self._creds.get("password", ""),
             )
-            ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-            ssl_ctx.check_hostname = False
-            ssl_ctx.verify_mode = ssl.CERT_NONE
+            ssl_ctx = ssl.create_default_context()
             self._client.tls_set_context(ssl_ctx)
 
             self._client.on_connect = self._handle_connect
@@ -89,7 +91,8 @@ class TuyaMqttClient:
             topics = self._creds.get("topics", [])
             for t in topics:
                 client.subscribe(t)
-            self._log(f"MQTT_CONNECTED rc={rc} subscribed_topics={topics}")
+            safe_topics = [re.sub(r"(?i)(/mb/|/av/u/)[^/]+", r"\1[REDACTED]", str(t)) for t in topics]
+            self._log(f"MQTT_CONNECTED rc={rc} subscribed_topics={safe_topics}")
         else:
             self._log(f"MQTT_CONNECT_FAILED rc={rc}")
 
@@ -106,7 +109,22 @@ class TuyaMqttClient:
         except Exception:
             data = {"raw": str(msg.payload[:200])}
 
-        self._log(f"MQTT_MSG topic={topic} payload={str(data)[:500]}")
+        safe_topic = re.sub(r"(?i)(/mb/|/av/u/)[^/]+", r"\1[REDACTED]", topic)
+        self._log(f"MQTT_MSG topic={safe_topic} payload={json.dumps(_sanitize_payload(data), ensure_ascii=False)[:500]}")
 
         if self._loop and self._running:
             self._loop.call_soon_threadsafe(self._on_message, topic, data)
+
+
+def _sanitize_payload(value: Any, key: str = "") -> Any:
+    """Redact sensitive MQTT fields before diagnostic logging."""
+    lowered = key.casefold().replace("_", "")
+    if any(token in lowered for token in ("password", "token", "secret", "localkey", "sid", "sign", "auth", "credential", "uid", "encryptkey")):
+        return "[REDACTED]"
+    if isinstance(value, dict):
+        return {str(k): _sanitize_payload(v, str(k)) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_sanitize_payload(v) for v in value]
+    if isinstance(value, str):
+        return value[:300]
+    return value

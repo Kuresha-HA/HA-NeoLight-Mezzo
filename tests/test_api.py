@@ -253,3 +253,12 @@ def test_restore_session_rejects_non_https_endpoint():
         pass
     else:
         raise AssertionError("Insecure endpoint must be rejected")
+
+
+def test_load_profile_fallback_to_builtin_default():
+    profile = _API.load_profile()
+    assert profile["app_key"] == "t8tvtyectyrwh9v3f353"
+    assert profile["ttid"] == "neoneo"
+    assert len(profile["bmp_token"]) == 64
+    assert len(profile["app_secret"]) == 32
+

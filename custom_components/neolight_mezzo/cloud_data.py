@@ -74,7 +74,6 @@ def normalize_snapshot(
                 "product_id": str(device.get("productId") or ""),
                 "category": str(device.get("category") or ""),
                 "home_id": home_id,
-                "local_key": str(device.get("localKey") or ""),
                 # Keep only the current DP snapshot; retain localKey for local push.
                 "dps": (
                     {

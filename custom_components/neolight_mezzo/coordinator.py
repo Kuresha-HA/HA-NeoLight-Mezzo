@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import aiohttp
 from datetime import datetime, timedelta, timezone
 import json
 import logging
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -34,14 +35,7 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 UPDATE_INTERVAL = timedelta(minutes=5)
-
-
-def _append_diagnostic_log(path: str, message: str) -> None:
-    """Append a single sanitized diagnostic line without blocking the event loop."""
-    log_path = Path(path)
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    with log_path.open("a", encoding="utf-8") as stream:
-        stream.write(f"{datetime.now(timezone.utc).isoformat()} {message[:4000]}\n")
+DOORBELL_POLL_INTERVAL = 12
 
 
 _SECRET_KEY_PARTS = (
@@ -52,60 +46,6 @@ _SECRET_KEY_PARTS = (
 )
 _SECRET_KEY_NAMES = {"auth", "key", "sign", "signature"}
 
-
-def _sanitize_diag_value(value: Any, key: str = "") -> Any:
-    """Redact credentials while preserving useful device/DP structure."""
-    lowered = key.casefold().replace("_", "")
-    if (
-        lowered in _SECRET_KEY_NAMES
-        or lowered.endswith("signature")
-        or any(part.replace("_", "") in lowered for part in _SECRET_KEY_PARTS)
-    ):
-        if "localkey" in lowered:
-            return {"present": bool(value), "length": len(str(value)) if value else 0}
-        return "[REDACTED]"
-    if isinstance(value, dict):
-        return {str(k): _sanitize_diag_value(v, str(k)) for k, v in value.items()}
-    if isinstance(value, list):
-        return [_sanitize_diag_value(item) for item in value]
-    if isinstance(value, str):
-        if lowered in {"schema", "schemaext", "skill", "skills"} and value.startswith(("[", "{")):
-            try:
-                return _sanitize_diag_value(json.loads(value), "")
-            except (ValueError, TypeError):
-                pass
-        if value.startswith(("rtsp://", "rtsps://", "http://", "https://")):
-            try:
-                parsed = urlsplit(value)
-                if parsed.scheme and parsed.hostname:
-                    host = parsed.hostname
-                    if parsed.port:
-                        host = f"{host}:{parsed.port}"
-                    safe_query = urlencode(
-                        [(name, "[REDACTED]") for name, _ in parse_qsl(parsed.query, keep_blank_values=True)]
-                    )
-                    return urlunsplit((parsed.scheme, host, parsed.path, safe_query, ""))
-            except ValueError:
-                return "[REDACTED_URL]"
-        return value
-    if value is None or isinstance(value, (bool, int, float)):
-        return value
-    return type(value).__name__
-
-
-def _summarize_device_for_diag(dev: dict[str, Any]) -> str:
-    """Serialize the raw device record with secrets redacted and DP values retained."""
-    record = _sanitize_diag_value(dev)
-    for key in ("skills", "meta", "schema", "dpCodes", "standSchemaModel"):
-        raw = dev.get(key)
-        if isinstance(raw, str) and raw:
-            try:
-                record[f"{key}_parsed"] = _sanitize_diag_value(json.loads(raw), key)
-            except (ValueError, TypeError):
-                record[f"{key}_parse"] = "not_json"
-    if isinstance(dev.get("localKey"), str):
-        record["localKey"] = {"present": True, "length": len(dev["localKey"])}
-    return json.dumps(record, ensure_ascii=False, separators=(",", ":"))
 
 
 class NeoLightCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
@@ -121,9 +61,10 @@ class NeoLightCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         self.entry = entry
         self.client: NeoLightMobileApi | None = None
-        self._diagnostic_path = hass.config.path("NeoLite.log")
         self._doorbell_ring_states: dict[str, dict[str, Any]] = {}
+        self._ring_reset_handles: dict[str, asyncio.TimerHandle] = {}
         self._cached_snapshots: dict[str, bytes] = {}
+        self._snapshot_prefetch_generation: dict[str, int] = {}
         self._last_seen_msg_time: dict[str, int] = {}
         self._mqtt_client: Any = None
         self._poll_task: Any = None
@@ -132,20 +73,27 @@ class NeoLightCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._device_local_keys: dict[str, str] = {}
         self._default_snapshot_bytes: bytes | None = None
         self._snapshot_path = hass.config.path(".storage", "neolight_mezzo_snapshot.jpg")
-        self._init_default_snapshot()
 
-    def _init_default_snapshot(self) -> None:
-        """Load persisted or bundled snapshot if available."""
-        try:
-            persisted = Path(self._snapshot_path)
-            if persisted.is_file():
-                self._default_snapshot_bytes = persisted.read_bytes()
-                return
+    async def _async_init_snapshots(self) -> None:
+        """Load default and per-device cached snapshots outside the event loop."""
+        def _load() -> tuple[bytes | None, dict[str, bytes]]:
+            default = None
+            cache: dict[str, bytes] = {}
             bundled = Path(__file__).parent / "default_snapshot.jpg"
-            if bundled.is_file():
-                self._default_snapshot_bytes = bundled.read_bytes()
-        except Exception as err:
-            _LOGGER.debug("Could not read default snapshot: %s", err)
+            try:
+                if bundled.is_file():
+                    default = bundled.read_bytes()
+                storage = Path(self.hass.config.path(".storage"))
+                for item in storage.glob("neolight_mezzo_snapshot_*.jpg"):
+                    device_id = item.stem.removeprefix("neolight_mezzo_snapshot_")
+                    try:
+                        cache[device_id] = item.read_bytes()
+                    except OSError:
+                        pass
+            except OSError:
+                pass
+            return default, cache
+        self._default_snapshot_bytes, self._cached_snapshots = await self.hass.async_add_executor_job(_load)
 
     def get_cached_snapshot(self, device_id: str) -> bytes | None:
         """Return the latest cached snapshot image bytes."""
@@ -155,17 +103,36 @@ class NeoLightCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Cache the latest snapshot image bytes and persist to disk."""
         if image_bytes:
             self._cached_snapshots[device_id] = image_bytes
-            self._default_snapshot_bytes = image_bytes
-
             def _save() -> None:
                 try:
-                    p = Path(self._snapshot_path)
+                    p = Path(self.hass.config.path(".storage", f"neolight_mezzo_snapshot_{device_id}.jpg"))
                     p.parent.mkdir(parents=True, exist_ok=True)
                     p.write_bytes(image_bytes)
-                except Exception:
+                except OSError:
                     pass
+            self.hass.async_create_task(self.hass.async_add_executor_job(_save))
 
-            self.hass.async_add_executor_job(_save)
+    async def _async_prefetch_snapshot(self, device_id: str, pic_url: str, generation: int) -> None:
+        """Fetch caller image immediately, without allowing older requests to overwrite newer rings."""
+        if not pic_url or not pic_url.startswith(("http://", "https://")):
+            return
+        try:
+            session = async_get_clientsession(self.hass)
+            async with session.get(pic_url, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                if response.status != 200:
+                    return
+                image_bytes = await response.read()
+            is_jpeg = image_bytes.startswith(b"\xff\xd8\xff")
+            is_png = image_bytes.startswith(b"\x89PNG\r\n\x1a\n")
+            if not image_bytes or not (is_jpeg or is_png):
+                _LOGGER.debug("Caller snapshot response was not a JPEG/PNG for device %s", device_id)
+                return
+            if self._snapshot_prefetch_generation.get(device_id) != generation:
+                return
+            self.set_cached_snapshot(device_id, image_bytes)
+            self.async_update_listeners()
+        except (aiohttp.ClientError, asyncio.TimeoutError, TimeoutError, OSError) as err:
+            _LOGGER.debug("Could not prefetch caller snapshot for %s: %s", device_id, type(err).__name__)
 
     def get_doorbell_ring_state(self, device_id: str) -> dict[str, Any]:
         """Return the current ringing state and last event info for a device."""
@@ -178,14 +145,38 @@ class NeoLightCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         source: str = "cloud_message",
     ) -> None:
         """Trigger an active doorbell ringing event and schedule its auto-reset."""
-        ts = event_payload.get("time") or int(datetime.now(timezone.utc).timestamp())
-        iso_str = datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+        try:
+            ts = int(event_payload.get("time") or int(datetime.now(timezone.utc).timestamp()))
+            if ts > 10_000_000_000:
+                ts //= 1000
+        except (TypeError, ValueError):
+            ts = int(datetime.now(timezone.utc).timestamp())
+        previous = self._doorbell_ring_states.get(device_id, {})
+        old_ts = int(previous.get("timestamp") or 0)
         msg_text = str(
             event_payload.get("msgContent")
             or event_payload.get("message")
             or "Someone is ringing the doorbell"
         )
         pic_url = str(event_payload.get("attachPics") or "")
+        self._last_seen_msg_time[device_id] = max(self._last_seen_msg_time.get(device_id, 0), ts)
+
+        # Suppress duplicate delivery of the same message, not a new press just
+        # because the previous ring is still active. A different timestamp or
+        # picture URL means a new event and must be registered immediately.
+        old_pic_url = str(previous.get("picture_url") or "")
+        same_event = (
+            ts == old_ts
+            and (
+                pic_url == old_pic_url
+                or (not pic_url and not old_pic_url)
+            )
+            and msg_text == str(previous.get("message") or "")
+        )
+        if same_event:
+            return
+
+        iso_str = datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
 
         self._doorbell_ring_states[device_id] = {
             "is_ringing": True,
@@ -195,6 +186,12 @@ class NeoLightCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "picture_url": pic_url,
             "source": source,
         }
+        if pic_url:
+            generation = self._snapshot_prefetch_generation.get(device_id, 0) + 1
+            self._snapshot_prefetch_generation[device_id] = generation
+            self.hass.async_create_task(
+                self._async_prefetch_snapshot(device_id, pic_url, generation)
+            )
 
         self.hass.bus.async_fire(
             "neolight_mezzo_doorbell_ring",
@@ -219,21 +216,20 @@ class NeoLightCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self.hass.async_create_task(
                     self._diag(f"DOORBELL_RING_RESET devId={device_id}")
                 )
+                self._ring_reset_handles.pop(device_id, None)
                 self.async_update_listeners()
 
-        self.hass.loop.call_later(30, _reset_ring)
+        previous_handle = self._ring_reset_handles.pop(device_id, None)
+        if previous_handle:
+            previous_handle.cancel()
+        self._ring_reset_handles[device_id] = self.hass.loop.call_later(30, _reset_ring)
 
     async def async_unlock_door(self, device_id: str, door_channel: int = 1) -> dict[str, Any]:
-        """Unlock door 1 (DP 241), door 2 (DP 242), or accessory lock (DP 148)."""
+        """Unlock the main door (DP 148) or gate (DP 232)."""
         if not self.client:
             raise UpdateFailed("NeoLight cloud client is not connected.")
-        dp_map = {
-            1: "241",  # Door 1 Unlock
-            2: "242",  # Door 2 Unlock
-            3: "148",  # Accessory Lock
-            4: "232",  # IPC Lock 2
-        }
-        dp_id = dp_map.get(door_channel, "241")
+        dp_map = {1: "148", 2: "232"}
+        dp_id = dp_map.get(door_channel, "148")
         await self._diag(f"DOOR_UNLOCK_COMMAND devId={device_id} channel={door_channel} dp={dp_id}")
         try:
             res = await self.client.publish_dps(device_id, {dp_id: True}, diag_fn=self._diag)
@@ -243,29 +239,49 @@ class NeoLightCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             await self._diag(f"DOOR_UNLOCK_EXCEPTION devId={device_id} err={err!r}")
             raise
 
+    async def _async_restart_mqtt_client(self) -> None:
+        """Restart MQTT with credentials from the current cloud session."""
+        if self._mqtt_client:
+            with contextlib.suppress(Exception):
+                await self.hass.async_add_executor_job(self._mqtt_client.stop)
+            self._mqtt_client = None
+        if not self.client:
+            return
+        try:
+            from .mqtt_client import TuyaMqttClient
+            creds = self.client.get_mqtt_credentials()
+
+            def _on_mqtt_msg(topic: str, data: dict[str, Any]) -> None:
+                devices = self.data.get("devices", []) if self.data else []
+                if not isinstance(data, dict):
+                    return
+                payload = data.get("data") if isinstance(data.get("data"), dict) else data
+                dev_id = next((str(payload.get(k)) for k in ("devId", "cid", "msgSrcId", "deviceId") if payload.get(k)), "")
+                if not dev_id and len(devices) == 1:
+                    dev_id = str(devices[0].get("id") or "")
+                if not dev_id or not any(str(d.get("id") or "") == dev_id for d in devices):
+                    return
+                code = str(payload.get("msgCode") or payload.get("command") or payload.get("cmd") or "").casefold()
+                dps = payload.get("dps") if isinstance(payload.get("dps"), dict) else {}
+                explicit = code in {"ipc_doorbell", "ac_doorbell", "doorbell", "doorbell_ring", "ring"} or any(
+                    str(k) in {"136", "154", "185"} and v not in (None, False, 0, "", "0", "false")
+                    for k, v in dps.items()
+                )
+                if explicit:
+                    self.trigger_doorbell_ring(dev_id, payload, source="mqtt")
+
+            def _on_mqtt_log(msg: str) -> None:
+                _LOGGER.debug("NeoLight MQTT: %s", msg)
+
+            self._mqtt_client = TuyaMqttClient(creds, _on_mqtt_msg, _on_mqtt_log)
+            await self.hass.async_add_executor_job(self._mqtt_client.start, self.hass.loop)
+        except Exception as err:
+            self._mqtt_client = None
+            _LOGGER.warning("NeoLight MQTT initialization failed: %s", type(err).__name__)
+
     async def start_doorbell_listener(self) -> None:
         """Start both MQTT push listener and fast cloud message poller."""
-        if self.client:
-            try:
-                from .mqtt_client import TuyaMqttClient
-                creds = self.client.get_mqtt_credentials()
-
-                def _on_mqtt_msg(topic: str, data: dict[str, Any]) -> None:
-                    devices = self.data.get("devices", []) if self.data else []
-                    for dev in devices:
-                        dev_id = str(dev.get("id") or "")
-                        data_str = str(data).casefold()
-                        if dev_id and (dev_id in data_str or "doorbell" in data_str or "ring" in data_str):
-                            self.trigger_doorbell_ring(dev_id, data, source="mqtt")
-
-                def _on_mqtt_log(msg: str) -> None:
-                    self.hass.async_create_task(self._diag(msg))
-
-                self._mqtt_client = TuyaMqttClient(creds, _on_mqtt_msg, _on_mqtt_log)
-                self._mqtt_client.start(self.hass.loop)
-            except Exception as err:
-                await self._diag(f"MQTT_INIT_FAILED error={err}")
-
+        await self._async_restart_mqtt_client()
         if self._poll_task is None or self._poll_task.done():
             self._poll_task = self.hass.async_create_background_task(
                 self._async_poll_doorbell_loop(), "neolight_mezzo_doorbell_poll"
@@ -275,20 +291,25 @@ class NeoLightCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Stop background doorbell monitoring tasks."""
         if self._mqtt_client:
             try:
-                self._mqtt_client.stop()
+                await self.hass.async_add_executor_job(self._mqtt_client.stop)
             except Exception:
                 pass
             self._mqtt_client = None
         if self._poll_task and not self._poll_task.done():
             self._poll_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._poll_task
             self._poll_task = None
+        for handle in self._ring_reset_handles.values():
+            handle.cancel()
+        self._ring_reset_handles.clear()
 
     async def _async_poll_doorbell_loop(self) -> None:
         """Periodically check the cloud message center for new doorbell ring alerts."""
-        await self._diag("DOORBELL_POLL_LOOP_STARTED interval=4s")
+        await self._diag("DOORBELL_POLL_LOOP_STARTED interval=12s")
         while True:
             try:
-                await asyncio.sleep(4)
+                await asyncio.sleep(DOORBELL_POLL_INTERVAL)
                 if not self.client:
                     await self._diag("DOORBELL_POLL_NO_CLIENT")
                     continue
@@ -302,11 +323,9 @@ class NeoLightCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         continue
                     msg = await self.client.get_latest_doorbell_message(dev_id)
                     if not isinstance(msg, dict):
-                        await self._diag(f"DOORBELL_POLL_MSG_NONE devId={dev_id}")
                         continue
                     msg_time = int(msg.get("time") or 0)
                     if msg_time <= 0:
-                        await self._diag(f"DOORBELL_POLL_MSG_NO_TIME devId={dev_id}")
                         continue
 
                     last_seen = self._last_seen_msg_time.get(dev_id)
@@ -327,6 +346,12 @@ class NeoLightCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                             "picture_url": pic_url,
                             "source": "history",
                         }
+                        if pic_url and dev_id not in self._cached_snapshots:
+                            generation = self._snapshot_prefetch_generation.get(dev_id, 0) + 1
+                            self._snapshot_prefetch_generation[dev_id] = generation
+                            self.hass.async_create_task(
+                                self._async_prefetch_snapshot(dev_id, pic_url, generation)
+                            )
                         now_ts = int(datetime.now(timezone.utc).timestamp())
                         await self._diag(
                             f"DOORBELL_INITIAL_MSG devId={dev_id} msg_time={msg_time} age_sec={now_ts - msg_time}"
@@ -343,32 +368,26 @@ class NeoLightCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         self.trigger_doorbell_ring(dev_id, msg, source="cloud_message")
             except asyncio.CancelledError:
                 break
+            except NeoLightAuthError:
+                _LOGGER.warning("NeoLight session expired during doorbell poll; re-authenticating.")
+                try:
+                    await self._login()
+                    await self._async_restart_mqtt_client()
+                except Exception as auth_err:
+                    _LOGGER.error("NeoLight re-authentication in poll loop failed: %s", type(auth_err).__name__)
+                    await asyncio.sleep(DOORBELL_POLL_INTERVAL)
             except Exception as err:
                 await self._diag(f"DOORBELL_POLL_ERROR error={type(err).__name__} detail={err!r}")
                 _LOGGER.error("Doorbell poll loop error: %s", err)
 
     async def _diag(self, message: str) -> None:
-        """Write sanitized diagnostic events to /config/NeoLite.log."""
-        try:
-            await self.hass.async_add_executor_job(
-                _append_diagnostic_log, self._diagnostic_path, message
-            )
-        except OSError:
-            _LOGGER.exception("Could not write NeoLight diagnostic log.")
+        """Compatibility no-op for high-volume diagnostic calls.
 
-    async def _diag_json_chunks(self, event: str, index: int, value: Any) -> None:
-        """Log complete sanitized JSON payloads in bounded, reassemblable chunks."""
-        serialized = json.dumps(
-            _sanitize_diag_value(value), ensure_ascii=False, separators=(",", ":")
-        )
-        chunks = [
-            serialized[pos:pos + 3000]
-            for pos in range(0, len(serialized), 3000)
-        ] or ["{}"]
-        for part, chunk in enumerate(chunks, start=1):
-            await self._diag(
-                f"{event} index={index} part={part}/{len(chunks)} data={chunk}"
-            )
+        File-based diagnostic logging was removed in version 0.5.0 to prevent
+        unbounded growth of /config/NeoLite.log. Operational warnings and errors
+        continue to use Home Assistant's standard logger.
+        """
+        return
 
     async def _new_client(self) -> Any:
         """Build a client without blocking Home Assistant's event loop on disk I/O."""
@@ -397,9 +416,7 @@ class NeoLightCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             await self._diag("AUTH_SUCCESS session_received=true")
             _LOGGER.debug("NeoLight: cloud authentication returned a session.")
         except Exception as err:
-            import traceback
-            tb = traceback.format_exc().replace("\n", " -> ")
-            await self._diag(f"AUTH_FAILED error={type(err).__name__}: {err} tb={tb}")
+            await self._diag(f"AUTH_FAILED error_type={type(err).__name__}")
             raise
 
     async def _fetch_snapshot(self) -> dict[str, Any]:
@@ -419,12 +436,8 @@ class NeoLightCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     raw_devices = await self.client.get_devices(str(home_id))
                     devices_by_home[str(home_id)] = raw_devices
                     await self._diag(f"DEVICES_SUCCESS home_id_present=true count={len(raw_devices)}")
-                    for idx, raw_dev in enumerate(raw_devices):
+                    for raw_dev in raw_devices:
                         if isinstance(raw_dev, dict):
-                            detail = _summarize_device_for_diag(raw_dev)
-                            chunks = [detail[pos:pos + 3000] for pos in range(0, len(detail), 3000)] or ["{}"]
-                            for part, chunk in enumerate(chunks, start=1):
-                                await self._diag(f"DEVICE_DETAIL index={idx} part={part}/{len(chunks)} data={chunk}")
                             device_id = raw_dev.get("devId") or raw_dev.get("id")
                             if device_id and raw_dev.get("localKey"):
                                 self._device_local_keys[str(device_id)] = str(raw_dev["localKey"])
@@ -466,6 +479,7 @@ class NeoLightCloudCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 _LOGGER.warning("NeoLight session was rejected while fetching data; logging in again.")
                 phase = "re-authentication"
                 await self._login()
+                await self._async_restart_mqtt_client()
                 phase = "fetching homes/devices after re-authentication"
                 return await self._fetch_snapshot()
         except NeoLightApiError as err:

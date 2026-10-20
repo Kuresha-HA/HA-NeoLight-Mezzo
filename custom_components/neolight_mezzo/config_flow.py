@@ -140,7 +140,7 @@ class NeoLightConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             _LOGGER.warning("NeoLight cloud setup failed: %s", err)
             errors["base"] = "cannot_connect"
         except Exception as err:
-            _LOGGER.error("Unexpected NeoLight setup error (%s).", type(err).__name__)
+            _LOGGER.exception("Unexpected NeoLight setup error (%s).", type(err).__name__)
             errors["base"] = "unknown"
 
         if mfa_code:
@@ -149,7 +149,11 @@ class NeoLightConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 data_schema=vol.Schema({vol.Required("mfa_code"): str}),
                 errors=errors,
                 description_placeholders={
-                    "account": str(values[CONF_USERNAME])
+                    "account": str(
+                        values.get(CONF_USERNAME)
+                        or (getattr(self, "_pending_credentials", None) or {}).get(CONF_USERNAME)
+                        or ""
+                    )
                 },
             )
         return self._show_user_form(errors)

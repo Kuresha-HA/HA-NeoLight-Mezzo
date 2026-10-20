@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from homeassistant.components.lock import LockEntity
@@ -43,10 +44,10 @@ async def async_setup_entry(
                 continue
             known_device_ids.add(device_id)
             entities.append(
-                NeoLightDoorLock(coordinator, entry, device, door_channel=1, name="Door 1")
+                NeoLightDoorLock(coordinator, entry, device, door_channel=1, name="Door")
             )
             entities.append(
-                NeoLightDoorLock(coordinator, entry, device, door_channel=2, name="Door 2")
+                NeoLightDoorLock(coordinator, entry, device, door_channel=2, name="Gate")
             )
         return entities
 
@@ -79,15 +80,23 @@ class NeoLightDoorLock(
         super().__init__(coordinator)
         self._device_id = str(device.get("id") or "")
         self._door_channel = door_channel
-        self._attr_name = name
+        self._attr_translation_key = "gate" if door_channel == 2 else "door"
         self._attr_unique_id = f"{entry.entry_id}_{self._device_id}_lock_ch{door_channel}"
         self._attr_device_info = _device_info_for(device)
         self._is_locked = True
+        self._relock_handle: asyncio.TimerHandle | None = None
 
     @property
     def is_locked(self) -> bool:
         """Return True as intercom door strikes are normally locked."""
         return self._is_locked
+
+    @property
+    def icon(self) -> str:
+        """Show an icon that matches the lock type and its current state."""
+        if self._door_channel == 2:
+            return "mdi:gate" if self._is_locked else "mdi:gate-open"
+        return "mdi:door-closed" if self._is_locked else "mdi:door-open"
 
     async def async_unlock(self, **kwargs: Any) -> None:
         """Unlock the electric door strike, auto-relocking after 5 seconds."""
@@ -100,7 +109,14 @@ class NeoLightDoorLock(
             self._is_locked = True
             self.async_write_ha_state()
 
-        self.hass.loop.call_later(5, _auto_relock)
+        if self._relock_handle:
+            self._relock_handle.cancel()
+        self._relock_handle = self.hass.loop.call_later(5, _auto_relock)
+
+    async def async_will_remove_from_hass(self) -> None:
+        if self._relock_handle:
+            self._relock_handle.cancel()
+            self._relock_handle = None
 
     async def async_lock(self, **kwargs: Any) -> None:
         """Return lock to secured state."""

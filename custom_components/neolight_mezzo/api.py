@@ -315,8 +315,15 @@ class NeoLightMobileApi:
                 if response.status >= 500:
                     raise NeoLightApiError(f"NeoLight cloud returned HTTP {response.status}.")
                 try:
-                    raw_bytes = await response.read()
-                    payload = json.loads(raw_bytes.decode("utf-8", errors="replace"))
+                    if hasattr(response, "read"):
+                        raw_bytes = await response.read()
+                        raw_text = raw_bytes.decode("utf-8", errors="replace")
+                        payload = json.loads(raw_text)
+                    elif hasattr(response, "text"):
+                        raw_text = await response.text()
+                        payload = json.loads(raw_text)
+                    else:
+                        payload = await response.json(content_type=None)
                 except (ValueError, json.JSONDecodeError) as err:
                     raise NeoLightApiError("NeoLight cloud returned a non-JSON response.") from err
         except (ClientError, TimeoutError) as err:
@@ -547,6 +554,8 @@ class NeoLightMobileApi:
         sid = self._sid or ""
         ecode = self._ecode or ""
         uid = self._uid or ""
+        if not uid:
+            raise NeoLightApiError("Cannot derive MQTT topics without uid")
 
         # 1. Username
         app_key_md5 = hashlib.md5(app_key.encode("utf-8")).hexdigest()
@@ -600,6 +609,8 @@ class NeoLightMobileApi:
                         src = item.get("msgSrcId")
                         if not device_id or not src or src == device_id:
                             return item
+        except NeoLightAuthError:
+            raise
         except Exception as err:
             _LOGGER.warning("Could not check doorbell message center: %s", err)
         return None
@@ -617,8 +628,6 @@ class NeoLightMobileApi:
             ("tuya.m.device.dp.publish", "1.0", {"devId": device_id, "dps": dps}),
             ("smartlife.m.device.dp.publish", "1.0", {"devId": device_id, "dps": dps_json}),
             ("smartlife.m.device.dp.publish", "1.0", {"devId": device_id, "dps": dps}),
-            ("thing.m.device.dp.publish", "1.0", {"devId": device_id, "dps": dps_json}),
-            ("thing.m.device.dp.publish", "1.0", {"devId": device_id, "dps": dps}),
             ("tuya.m.device.dp.publish", "1.0", {"deviceId": device_id, "dps": dps_json}),
             ("smartlife.m.device.dp.publish", "1.0", {"deviceId": device_id, "dps": dps_json}),
             ("tuya.m.device.dp.publish", "2.0", {"devId": device_id, "dps": dps_json}),
@@ -631,6 +640,8 @@ class NeoLightMobileApi:
                 if diag_fn:
                     await diag_fn(f"PUBLISH_DPS_SUCCESS action={action} v={version} res={res}")
                 return {"status": "ok", "action": action, "result": res}
+            except NeoLightAuthError:
+                raise
             except Exception as err:
                 last_error = err
                 if diag_fn:
@@ -639,6 +650,8 @@ class NeoLightMobileApi:
                     raise NeoLightApiError(
                         f"Устройство {device_id} оффлайн в Tuya Cloud (DEVICE_OFFLINE). Проверьте статус питания и Wi-Fi домофона."
                     ) from err
+                if "API_OR_API_VERSION_WRONG" not in str(err):
+                    raise NeoLightApiError(f"Failed to publish DPs to device {device_id}: {err}") from err
                 _LOGGER.debug("publish_dps candidate %s failed: %s", action, err)
         raise NeoLightApiError(f"Failed to publish DPs to device {device_id}: {last_error}")
 
